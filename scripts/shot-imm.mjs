@@ -1,0 +1,12 @@
+import { chromium } from "playwright";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+await page.goto("http://127.0.0.1:1420/");
+await page.waitForTimeout(1400);
+await page.getByText("袖口のキルト").dblclick();
+await page.waitForTimeout(500);
+await page.click('button[title="沉浸模式"]');
+await page.waitForTimeout(1200);
+await page.screenshot({ path: "/tmp/shots/03-immersive.png" });
+await browser.close();
+console.log("ok");
