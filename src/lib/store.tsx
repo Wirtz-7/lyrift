@@ -166,7 +166,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const t = q[e.index];
         if (t) {
           setPb((p) => ({ ...p, track: t, position: 0, duration: t.duration }));
-          setLyrics({ kind: "none" });
+          if (t.path) {
+            api.lyricsFor(t.path).then(setLyrics).catch(() => setLyrics({ kind: "none" }));
+          }
         }
         return q;
       });
@@ -195,7 +197,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const startTrack = useCallback(
     (t: Track) => {
-      setLyrics(isTauri ? { kind: "none" } : mockLyrics(t.id));
+      if (isTauri && t.path) {
+        api.lyricsFor(t.path).then(setLyrics).catch(() => setLyrics({ kind: "none" }));
+      } else {
+        setLyrics(mockLyrics(t.id));
+      }
       setHistory((h) => [t, ...h.filter((x) => x.id !== t.id)].slice(0, 100));
       setPb((p) => ({ ...p, track: t, playing: true, position: 0, duration: t.duration }));
     },

@@ -1,6 +1,7 @@
 mod database;
 mod library;
 mod dsp;
+mod lyrics;
 mod player;
 
 use std::path::PathBuf;
@@ -15,6 +16,11 @@ pub struct AppState {
     pub covers_dir: PathBuf,
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
     pub player: Arc<player::PlayerService>,
+}
+
+#[tauri::command]
+fn lyrics_for(path: String) -> lyrics::LyricDto {
+    lyrics::load_lyrics(std::path::Path::new(&path))
 }
 
 #[tauri::command]
@@ -178,6 +184,7 @@ pub fn run() {
             add_folder,
             remove_folder,
             rescan,
+            lyrics_for,
             play_queue,
             queue_next,
             queue_prev,

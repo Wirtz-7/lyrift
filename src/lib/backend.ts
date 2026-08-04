@@ -82,6 +82,9 @@ export const api = {
   audioSettings(): Promise<{ eq: EqSettings; replayGain: string }> {
     return invoke("audio_settings");
   },
+  lyricsFor(path: string): Promise<import("./types").LyricState> {
+    return invoke("lyrics_for", { path });
+  },
   onTrackChanged(cb: (e: { index: number; id: number }) => void) {
     return listen<{ index: number; id: number }>("track-changed", (e) => cb(e.payload));
   },
