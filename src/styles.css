@@ -98,11 +98,22 @@ input[type="range"]:hover::-moz-range-thumb {
   opacity: 1;
 }
 
+.lyrics-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.lyrics-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 .lyric-line {
   transition:
-    opacity 0.45s ease,
-    filter 0.45s ease,
-    transform 0.45s ease;
+    opacity 0.3s ease,
+    filter 0.3s ease;
+}
+.lyrics-scrolling .lyric-line {
+  filter: none !important;
+  transition-property: opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {

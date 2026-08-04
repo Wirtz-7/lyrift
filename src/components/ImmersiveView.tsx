@@ -27,10 +27,21 @@ export default function ImmersiveView() {
   const { pb, lyrics } = s;
   const t = pb.track;
   const [shown, setShown] = useState(false);
+  const [scrolling, setScrolling] = useState(false);
+  const scrollTimer = useRef<number | undefined>(undefined);
   useEffect(() => {
     const id = requestAnimationFrame(() => setShown(true));
-    return () => cancelAnimationFrame(id);
+    return () => {
+      cancelAnimationFrame(id);
+      window.clearTimeout(scrollTimer.current);
+    };
   }, []);
+
+  const onLyricsScroll = () => {
+    setScrolling(true);
+    window.clearTimeout(scrollTimer.current);
+    scrollTimer.current = window.setTimeout(() => setScrolling(false), 220);
+  };
 
   const current =
     lyrics.kind === "synced"
@@ -96,9 +107,9 @@ export default function ImmersiveView() {
         )}
       </div>
 
-      <div className="relative z-10 flex h-full gap-14 px-12 pb-10 pt-16">
+      <div className="relative z-10 mx-auto flex h-full w-full max-w-[1800px] gap-14 px-12 pb-10 pt-16">
         {/* left: cover + controls */}
-        <div className="flex w-[40%] max-w-[440px] shrink-0 flex-col justify-center">
+        <div className="flex w-[42%] shrink-0 flex-col justify-center [&>*]:w-full [&>*]:max-w-[440px]">
           <CoverArt
             src={t?.cover}
             alt={t?.title ?? "无曲目"}
@@ -184,7 +195,10 @@ export default function ImmersiveView() {
         <div className="relative min-w-0 flex-1">
           {lyrics.kind === "synced" && (
             <div
-              className="h-full overflow-x-hidden overflow-y-auto py-[30vh] pr-6"
+              onScroll={onLyricsScroll}
+              className={`lyrics-scroll h-full overflow-x-hidden overflow-y-auto py-[30vh] pr-6 ${
+                scrolling ? "lyrics-scrolling" : ""
+              }`}
               style={{
                 maskImage: "linear-gradient(transparent, black 18%, black 82%, transparent)",
                 WebkitMaskImage:
@@ -194,8 +208,8 @@ export default function ImmersiveView() {
               {lyrics.lines.map((l, i) => {
                 const d = i - current;
                 const ad = Math.abs(d);
-                const opacity = d < 0 ? Math.max(0.14, 0.5 - ad * 0.12) : ad === 0 ? 1 : ad === 1 ? 0.55 : ad === 2 ? 0.32 : 0.16;
-                const blur = ad === 0 ? 0 : ad === 1 ? 1.5 : ad === 2 ? 3 : 5;
+                const opacity = ad === 0 ? 1 : ad === 1 ? 0.68 : ad === 2 ? 0.48 : 0.32;
+                const blur = ad === 0 ? 0 : ad === 1 ? 0.35 : ad === 2 ? 0.75 : 1.25;
                 return (
                   <button
                     key={i}
@@ -224,7 +238,7 @@ export default function ImmersiveView() {
             </div>
           )}
           {lyrics.kind === "plain" && (
-            <div className="h-full overflow-y-auto py-16 pr-6">
+            <div className="lyrics-scroll h-full overflow-y-auto py-16 pr-6">
               <div className="whitespace-pre-wrap text-[17px] leading-8 text-white/80">
                 {lyrics.text}
               </div>
