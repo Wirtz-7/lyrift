@@ -97,6 +97,7 @@ pub struct PlayerService {
     duration: Mutex<f64>,
     db: Arc<Mutex<rusqlite::Connection>>,
     ticks: Mutex<u32>,
+    pending_seek: Mutex<Option<f64>>,
 }
 
 fn parse_db(tag: Option<&lofty::tag::Tag>, key: &ItemKey) -> Option<f64> {
@@ -156,6 +157,7 @@ impl PlayerService {
             duration: Mutex::new(0.0),
             db,
             ticks: Mutex::new(0),
+            pending_seek: Mutex::new(None),
         })
     }
 
@@ -246,6 +248,7 @@ impl PlayerService {
         self.player.append(src);
         self.player.play();
         *self.duration.lock().unwrap() = duration;
+        *self.pending_seek.lock().unwrap() = None;
         {
             let mut q = self.queue.lock().unwrap();
             q.index = index;
@@ -320,6 +323,9 @@ impl PlayerService {
     pub fn toggle(&self) -> PlaybackEvent {
         if self.player.is_paused() {
             self.player.play();
+            if let Some(pos) = self.pending_seek.lock().unwrap().take() {
+                let _ = self.player.try_seek(Duration::from_secs_f64(pos));
+            }
         } else {
             self.player.pause();
         }
@@ -327,8 +333,15 @@ impl PlayerService {
     }
 
     pub fn seek(&self, pos: f64) -> Result<PlaybackEvent, String> {
+        let pos = pos.max(0.0);
+        if self.player.is_paused() {
+            // ponytail: rodio 0.22 never polls the source while paused, so a
+            // seek here would block forever; defer until resume.
+            *self.pending_seek.lock().unwrap() = Some(pos);
+            return Ok(self.snapshot());
+        }
         self.player
-            .try_seek(Duration::from_secs_f64(pos.max(0.0)))
+            .try_seek(Duration::from_secs_f64(pos))
             .map_err(|e| format!("seek 失败: {e}"))?;
         Ok(self.snapshot())
     }
@@ -443,11 +456,19 @@ impl PlayerService {
     }
 
     pub fn snapshot(&self) -> PlaybackEvent {
-        let q = self.queue.lock().unwrap();
+        let (track_id, duration) = {
+            let q = self.queue.lock().unwrap();
+            (q.items.get(q.index).map(|i| i.id), *self.duration.lock().unwrap())
+        };
+        let position = self
+            .pending_seek
+            .lock()
+            .unwrap()
+            .unwrap_or_else(|| self.player.get_pos().as_secs_f64());
         PlaybackEvent {
-            track_id: q.items.get(q.index).map(|i| i.id),
-            position: self.player.get_pos().as_secs_f64(),
-            duration: *self.duration.lock().unwrap(),
+            track_id,
+            position,
+            duration,
             playing: !self.player.is_paused() && !self.player.empty(),
         }
     }
