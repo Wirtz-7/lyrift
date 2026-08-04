@@ -1,6 +1,7 @@
 import {
   Expand,
   Heart,
+  SlidersHorizontal,
   ListMusic,
   Pause,
   Play,
@@ -107,6 +108,15 @@ export default function PlayerBar() {
 
       {/* right: queue / immersive / volume */}
       <div className="flex items-center justify-end gap-2">
+        <button
+          onClick={() => s.setEqOpen(!s.eqOpen)}
+          title="均衡器"
+          className={`rounded-md p-2 transition-colors ${
+            s.eqOpen ? "bg-white/10 text-white" : "text-white/50 hover:text-white"
+          }`}
+        >
+          <SlidersHorizontal className="h-4.5 w-4.5" />
+        </button>
         <button
           onClick={() => s.setQueueOpen(!s.queueOpen)}
           title="播放队列"

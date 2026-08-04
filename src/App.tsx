@@ -1,4 +1,5 @@
 import { Disc3, Heart, ListMusic, Settings, Users } from "lucide-react";
+import EqPanel from "./components/EqPanel";
 import ImmersiveView from "./components/ImmersiveView";
 import LibraryView from "./components/LibraryView";
 import PlaceholderView from "./components/PlaceholderView";
@@ -24,6 +25,7 @@ function Shell() {
             {s.view === "settings" && <PlaceholderView icon={Settings} title="设置" />}
           </main>
           {s.queueOpen && <QueuePanel />}
+          {s.eqOpen && <EqPanel />}
         </div>
         {!s.immersive && <PlayerBar />}
       </div>

@@ -58,8 +58,32 @@ export const api = {
   onScanProgress(cb: (p: { done: number; total: number }) => void) {
     return listen<{ done: number; total: number }>("scan-progress", (e) => cb(e.payload));
   },
-  play(id: number, path: string): Promise<PlaybackEvent> {
-    return invoke("play_track", { id, path });
+  playQueue(items: { id: number; path: string }[], index: number): Promise<PlaybackEvent> {
+    return invoke("play_queue", { items, index });
+  },
+  queueNext(): Promise<PlaybackEvent> {
+    return invoke("queue_next");
+  },
+  queuePrev(): Promise<PlaybackEvent> {
+    return invoke("queue_prev");
+  },
+  setShuffle(on: boolean) {
+    return invoke("set_shuffle", { on });
+  },
+  setRepeat(mode: string) {
+    return invoke("set_repeat", { mode });
+  },
+  setEq(settings: EqSettings) {
+    return invoke("set_eq", { settings });
+  },
+  setReplayGain(mode: string) {
+    return invoke("set_replay_gain", { mode });
+  },
+  audioSettings(): Promise<{ eq: EqSettings; replayGain: string }> {
+    return invoke("audio_settings");
+  },
+  onTrackChanged(cb: (e: { index: number; id: number }) => void) {
+    return listen<{ index: number; id: number }>("track-changed", (e) => cb(e.payload));
   },
   toggle(): Promise<PlaybackEvent> {
     return invoke("toggle_play");
@@ -83,4 +107,10 @@ export interface PlaybackEvent {
   position: number;
   duration: number;
   playing: boolean;
+}
+
+export interface EqSettings {
+  enabled: boolean;
+  preamp: number;
+  gains: number[];
 }

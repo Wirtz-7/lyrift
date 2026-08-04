@@ -1,5 +1,6 @@
 mod database;
 mod library;
+mod dsp;
 mod player;
 
 use std::path::PathBuf;
@@ -17,8 +18,47 @@ pub struct AppState {
 }
 
 #[tauri::command]
-fn play_track(id: i64, path: String, state: tauri::State<AppState>) -> Result<player::PlaybackEvent, String> {
-    state.player.load(id, &path)
+fn play_queue(
+    items: Vec<player::QueueItemDto>,
+    index: usize,
+    state: tauri::State<AppState>,
+) -> Result<player::PlaybackEvent, String> {
+    state.player.play_queue(items, index)
+}
+
+#[tauri::command]
+fn queue_next(state: tauri::State<AppState>, app: AppHandle) -> player::PlaybackEvent {
+    state.player.next(&app)
+}
+
+#[tauri::command]
+fn queue_prev(state: tauri::State<AppState>, app: AppHandle) -> player::PlaybackEvent {
+    state.player.prev(&app)
+}
+
+#[tauri::command]
+fn set_shuffle(on: bool, state: tauri::State<AppState>) {
+    state.player.set_shuffle(on)
+}
+
+#[tauri::command]
+fn set_repeat(mode: player::RepeatMode, state: tauri::State<AppState>) {
+    state.player.set_repeat(mode)
+}
+
+#[tauri::command]
+fn set_eq(settings: crate::dsp::EqSettings, state: tauri::State<AppState>) {
+    state.player.set_eq(settings)
+}
+
+#[tauri::command]
+fn set_replay_gain(mode: player::RgMode, state: tauri::State<AppState>) {
+    state.player.set_replay_gain(mode)
+}
+
+#[tauri::command]
+fn audio_settings(state: tauri::State<AppState>) -> player::AudioSettings {
+    state.player.audio_settings()
 }
 
 #[tauri::command]
@@ -138,7 +178,14 @@ pub fn run() {
             add_folder,
             remove_folder,
             rescan,
-            play_track,
+            play_queue,
+            queue_next,
+            queue_prev,
+            set_shuffle,
+            set_repeat,
+            set_eq,
+            set_replay_gain,
+            audio_settings,
             toggle_play,
             seek,
             set_volume

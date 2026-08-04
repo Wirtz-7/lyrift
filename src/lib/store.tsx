@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, isTauri } from "./backend";
+import { api, isTauri, type EqSettings } from "./backend";
 import { MOCK_TRACKS, mockLyrics } from "./mock";
 import type {
   LibraryState,
@@ -32,6 +32,8 @@ interface Store {
   setImmersive: (b: boolean) => void;
   queueOpen: boolean;
   setQueueOpen: (b: boolean) => void;
+  eqOpen: boolean;
+  setEqOpen: (b: boolean) => void;
 
   library: LibraryState;
   scanProgress: { done: number; total: number } | null;
@@ -46,6 +48,11 @@ interface Store {
   history: Track[];
   favorites: Set<string>;
 
+  eq: EqSettings;
+  rg: string;
+  updateEq: (patch: Partial<EqSettings>) => void;
+  setRg: (mode: string) => void;
+
   playTrack: (t: Track, context?: Track[]) => void;
   playQueueAt: (index: number) => void;
   togglePlay: () => void;
@@ -56,6 +63,10 @@ interface Store {
   toggleShuffle: () => void;
   cycleRepeat: () => void;
   toggleFavorite: (id: string) => void;
+}
+
+function idxOf(list: Track[], id: string): number {
+  return list.findIndex((x) => x.id === id);
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -69,7 +80,10 @@ export function useStore(): Store {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [view, setView] = useState<ViewId>("library");
   const [immersive, setImmersive] = useState(false);
-  const [queueOpen, setQueueOpen] = useState(false);
+  const [queueOpen, setQueueOpenRaw] = useState(false);
+  const [eqOpen, setEqOpenRaw] = useState(false);
+  const setQueueOpen = (b: boolean) => { setQueueOpenRaw(b); if (b) setEqOpenRaw(false); };
+  const setEqOpen = (b: boolean) => { setEqOpenRaw(b); if (b) setQueueOpenRaw(false); };
 
   const [library, setLibrary] = useState<LibraryState>({ status: "loading", tracks: [] });
   const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
@@ -94,6 +108,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [queueIndex, setQueueIndex] = useState(-1);
   const [history, setHistory] = useState<Track[]>([]);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [eq, setEq] = useState<EqSettings>({ enabled: false, preamp: 0, gains: Array(10).fill(0) });
+  const [rg, setRgState] = useState("off");
 
   const loadTimer = useRef<number | undefined>(undefined);
 
@@ -140,6 +156,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const uns: (() => void)[] = [];
     api.onLibraryChanged(() => refreshTracks()).then((f) => uns.push(f));
     api.onScanProgress((p) => setScanProgress(p)).then((f) => uns.push(f));
+    api.audioSettings().then((s) => {
+      setEq(s.eq);
+      setRgState(s.replayGain);
+    }).catch(() => {});
+    api.onTrackChanged((e) => {
+      setQueueIndex(e.index);
+      setQueue((q) => {
+        const t = q[e.index];
+        if (t) {
+          setPb((p) => ({ ...p, track: t, position: 0, duration: t.duration }));
+          setLyrics({ kind: "none" });
+        }
+        return q;
+      });
+    }).then((f) => uns.push(f));
     api
       .onPlayback((ev) =>
         setPb((p) => ({ ...p, position: ev.position, duration: ev.duration || p.duration, playing: ev.playing })),
@@ -166,21 +197,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (t: Track) => {
       setLyrics(isTauri ? { kind: "none" } : mockLyrics(t.id));
       setHistory((h) => [t, ...h.filter((x) => x.id !== t.id)].slice(0, 100));
-      if (isTauri && t.path) {
-        api
-          .play(Number(t.id), t.path)
-          .then((ev) =>
-            setPb((p) => ({
-              ...p,
-              track: t,
-              playing: ev.playing,
-              position: ev.position,
-              duration: ev.duration || t.duration,
-            })),
-          )
-          .catch((e) => flashError(String(e)));
-        return;
-      }
       setPb((p) => ({ ...p, track: t, playing: true, position: 0, duration: t.duration }));
     },
     [flashError],
@@ -189,23 +205,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const playTrack = useCallback(
     (t: Track, context?: Track[]) => {
       const list = context && context.length ? context : library.tracks.length ? library.tracks : [t];
-      const idx = list.findIndex((x) => x.id === t.id);
+      const idx = idxOf(list, t.id);
       setQueue(list);
       setQueueIndex(idx < 0 ? 0 : idx);
       startTrack(t);
+      if (isTauri) {
+        api
+          .playQueue(list.map((x) => ({ id: Number(x.id), path: x.path ?? "" })), idx < 0 ? 0 : idx)
+          .catch((e) => flashError(String(e)));
+      }
     },
-    [library.tracks, startTrack],
+    [library.tracks, startTrack, flashError],
   );
 
   const playQueueAt = useCallback(
     (index: number) => {
       const t = queue[index];
-      if (t) {
-        setQueueIndex(index);
-        startTrack(t);
+      if (!t) return;
+      setQueueIndex(index);
+      startTrack(t);
+      if (isTauri) {
+        api
+          .playQueue(queue.map((x) => ({ id: Number(x.id), path: x.path ?? "" })), index)
+          .catch((e) => flashError(String(e)));
       }
     },
-    [queue, startTrack],
+    [queue, startTrack, flashError],
   );
 
   const queueRef = useRef(queue);
@@ -216,6 +241,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   pbRef.current = pb;
 
   const next = useCallback(() => {
+    if (isTauri) {
+      api.queueNext().catch((e) => flashError(String(e)));
+      return;
+    }
     const q = queueRef.current;
     const i = idxRef.current;
     const p = pbRef.current;
@@ -238,9 +267,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setQueueIndex(ni);
     const t = q[ni];
     if (t) startTrack(t);
-  }, [startTrack]);
+  }, [startTrack, flashError]);
 
   const prev = useCallback(() => {
+    if (isTauri) {
+      api.queuePrev().catch((e) => flashError(String(e)));
+      return;
+    }
     if (pbRef.current.position > 3) {
       setPb((pp) => ({ ...pp, position: 0 }));
       return;
@@ -253,15 +286,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } else {
       setPb((pp) => ({ ...pp, position: 0 }));
     }
-  }, [startTrack]);
-
-  // auto-advance when the Rust player finishes a track
-  useEffect(() => {
-    if (!isTauri) return;
-    let un: (() => void) | undefined;
-    api.onTrackEnded(() => next()).then((f) => (un = f));
-    return () => un?.();
-  }, [next]);
+  }, [startTrack, flashError]);
 
   // mock playback clock (replaced by Rust player events in step 6)
   useEffect(() => {
@@ -306,15 +331,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (isTauri) api.setVolume(vol).catch(() => {});
     setPb((p) => ({ ...p, volume: vol }));
   }, []);
-  const toggleShuffle = useCallback(() => setPb((p) => ({ ...p, shuffle: !p.shuffle })), []);
-  const cycleRepeat = useCallback(
-    () =>
-      setPb((p) => ({
-        ...p,
-        repeat: p.repeat === "off" ? "all" : p.repeat === "all" ? "one" : "off",
-      })),
-    [],
-  );
+  const toggleShuffle = useCallback(() => {
+    setPb((p) => {
+      if (isTauri) api.setShuffle(!p.shuffle).catch(() => {});
+      return { ...p, shuffle: !p.shuffle };
+    });
+  }, []);
+  const cycleRepeat = useCallback(() => {
+    setPb((p) => {
+      const nextMode = p.repeat === "off" ? "all" : p.repeat === "all" ? "one" : "off";
+      if (isTauri) api.setRepeat(nextMode).catch(() => {});
+      return { ...p, repeat: nextMode as typeof p.repeat };
+    });
+  }, []);
+
+  const updateEq = useCallback((patch: Partial<EqSettings>) => {
+    setEq((e) => {
+      const nextEq = { ...e, ...patch, gains: patch.gains ?? e.gains };
+      if (isTauri) api.setEq(nextEq).catch(() => {});
+      return nextEq;
+    });
+  }, []);
+
+  const setRg = useCallback((mode: string) => {
+    setRgState(mode);
+    if (isTauri) api.setReplayGain(mode).catch(() => {});
+  }, []);
   const toggleFavorite = useCallback((id: string) => {
     setFavorites((f) => {
       const n = new Set(f);
@@ -345,12 +387,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setImmersive,
       queueOpen,
       setQueueOpen,
+      eqOpen,
+      setEqOpen,
       library,
       scanProgress,
       reloadLibrary,
       addFolder,
       pb,
       playerError,
+      eq,
+      rg,
+      updateEq,
+      setRg,
       lyrics,
       queue,
       queueIndex,
@@ -368,9 +416,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toggleFavorite,
     }),
     [
-      view, immersive, queueOpen, library, scanProgress, reloadLibrary, addFolder, pb, playerError, lyrics,
+      view, immersive, queueOpen, eqOpen, library, scanProgress, reloadLibrary, addFolder, pb, playerError, eq, rg, updateEq, setRg, lyrics,
       queue, queueIndex, history, favorites, playTrack, playQueueAt, togglePlay, next, prev,
-      seek, setVolume, toggleShuffle, cycleRepeat, toggleFavorite,
+      seek, setVolume, toggleShuffle, cycleRepeat, toggleFavorite, updateEq, setRg,
     ],
   );
 
