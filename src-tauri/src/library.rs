@@ -86,7 +86,10 @@ pub fn list_folders(db: &Arc<Mutex<Connection>>) -> Vec<FolderDto> {
         Err(_) => return vec![],
     };
     stmt.query_map([], |r| {
-        Ok(FolderDto { id: r.get(0)?, path: r.get(1)? })
+        Ok(FolderDto {
+            id: r.get(0)?,
+            path: r.get(1)?,
+        })
     })
     .map(|rows| rows.filter_map(|r| r.ok()).collect())
     .unwrap_or_default()
@@ -137,13 +140,20 @@ fn save_cover(data: &[u8], mime: &MimeType, dir: &Path) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-fn parse_one(
-    path: &Path,
+struct Parsed {
+    path: String,
+    title: String,
+    artist: String,
+    album: String,
+    duration: f64,
+    track_number: Option<i32>,
+    year: Option<i32>,
+    cover: Option<String>,
     mtime: i64,
     folder_id: i64,
-    covers: &Path,
-) -> Result<(String, String, String, String, f64, Option<i32>, Option<i32>, Option<String>, i64, i64), String>
-{
+}
+
+fn parse_one(path: &Path, mtime: i64, folder_id: i64, covers: &Path) -> Result<Parsed, String> {
     let tagged = Probe::open(path)
         .map_err(|e| e.to_string())?
         .read()
@@ -166,12 +176,24 @@ fn parse_one(
     };
     let artist = {
         let a = get(&ItemKey::TrackArtist);
-        if a.is_empty() { get(&ItemKey::AlbumArtist) } else { a }
+        if a.is_empty() {
+            get(&ItemKey::AlbumArtist)
+        } else {
+            a
+        }
     };
-    let artist = if artist.is_empty() { "未知歌手".into() } else { artist };
+    let artist = if artist.is_empty() {
+        "未知歌手".into()
+    } else {
+        artist
+    };
     let album = {
         let a = get(&ItemKey::AlbumTitle);
-        if a.is_empty() { "未知专辑".into() } else { a }
+        if a.is_empty() {
+            "未知专辑".into()
+        } else {
+            a
+        }
     };
     let track_number = get(&ItemKey::TrackNumber)
         .split('/')
@@ -179,11 +201,12 @@ fn parse_one(
         .and_then(|v| v.trim().parse().ok());
     let year = get(&ItemKey::Year).trim().parse().ok();
     let duration = tagged.properties().duration().as_secs_f64();
-    let cover = tag
-        .and_then(|t| t.pictures().first())
-        .and_then(|pic| pic.mime_type().and_then(|m| save_cover(pic.data(), m, covers)));
-    Ok((
-        path.to_string_lossy().into_owned(),
+    let cover = tag.and_then(|t| t.pictures().first()).and_then(|pic| {
+        pic.mime_type()
+            .and_then(|m| save_cover(pic.data(), m, covers))
+    });
+    Ok(Parsed {
+        path: path.to_string_lossy().into_owned(),
         title,
         artist,
         album,
@@ -193,7 +216,7 @@ fn parse_one(
         cover,
         mtime,
         folder_id,
-    ))
+    })
 }
 
 pub fn scan_folder(
@@ -219,12 +242,12 @@ pub fn scan_folder(
             .prepare("SELECT path, mtime FROM tracks WHERE folder_id = ?1")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([folder_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .query_map([folder_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
             .map_err(|e| e.to_string())?;
-        for r in rows {
-            if let Ok((p, m)) = r {
-                known.insert(p, m);
-            }
+        for (p, m) in rows.flatten() {
+            known.insert(p, m);
         }
     }
 
@@ -252,7 +275,8 @@ pub fn scan_folder(
         match parse_one(file, mtime, folder_id, covers) {
             Ok(row) => {
                 up.execute(params![
-                    row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9
+                    row.path, row.title, row.artist, row.album, row.duration,
+                    row.track_number, row.year, row.cover, row.mtime, row.folder_id
                 ])
                 .map_err(|e| e.to_string())?;
             }
@@ -260,7 +284,9 @@ pub fn scan_folder(
                 // unparseable file: keep a minimal row so it still shows up
                 up.execute(params![
                     path_str,
-                    file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                    file.file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
                     "未知歌手",
                     "未知专辑",
                     0.0,
@@ -308,7 +334,11 @@ pub fn add_folder(
     )
     .map_err(|e| e.to_string())?;
     let id: i64 = conn
-        .query_row("SELECT id FROM folders WHERE path = ?1", [path.to_string_lossy()], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM folders WHERE path = ?1",
+            [path.to_string_lossy()],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     scan_folder(&conn, id, path, covers, app)?;
     Ok(())
@@ -321,7 +351,11 @@ pub fn remove_folder(db: &Arc<Mutex<Connection>>, id: i64) -> Result<(), String>
     Ok(())
 }
 
-pub fn rescan_all(db: &Arc<Mutex<Connection>>, covers: &Path, app: Option<&AppHandle>) -> Result<(), String> {
+pub fn rescan_all(
+    db: &Arc<Mutex<Connection>>,
+    covers: &Path,
+    app: Option<&AppHandle>,
+) -> Result<(), String> {
     let folders = list_folders(db);
     for f in &folders {
         let conn = db.lock().map_err(|e| e.to_string())?;
@@ -411,4 +445,375 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect()
     }
+}
+
+// ---------- step 9: queries, collections, settings, state persistence ----------
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumDto {
+    pub name: String,
+    pub artist: String,
+    pub year: Option<i32>,
+    pub cover: Option<String>,
+    pub count: i64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistDto {
+    pub name: String,
+    pub albums: i64,
+    pub tracks: i64,
+    pub cover: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PlaylistDto {
+    pub id: i64,
+    pub name: String,
+}
+
+fn query_tracks(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Vec<TrackDto> {
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(params, |r| {
+        Ok(TrackDto {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            title: r.get(2)?,
+            artist: r.get(3)?,
+            album: r.get(4)?,
+            duration: r.get(5)?,
+            track_number: r.get(6)?,
+            year: r.get(7)?,
+            cover: r.get(8)?,
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+const TRACK_COLS: &str = "id, path, title, artist, album, duration, track_number, year, cover";
+
+pub fn search_tracks(db: &Arc<Mutex<Connection>>, q: &str) -> Vec<TrackDto> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let like = format!("%{q}%");
+    query_tracks(
+        &conn,
+        &format!(
+            "SELECT {TRACK_COLS} FROM tracks
+             WHERE title LIKE ?1 OR artist LIKE ?1 OR album LIKE ?1
+             ORDER BY album, track_number, title"
+        ),
+        [like],
+    )
+}
+
+pub fn albums(db: &Arc<Mutex<Connection>>) -> Vec<AlbumDto> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT album, artist, MAX(year), MAX(cover), COUNT(*)
+         FROM tracks WHERE album != '' GROUP BY album, artist
+         ORDER BY MAX(year) DESC, album",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], |r| {
+        Ok(AlbumDto {
+            name: r.get(0)?,
+            artist: r.get(1)?,
+            year: r.get(2)?,
+            cover: r.get(3)?,
+            count: r.get(4)?,
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn artists(db: &Arc<Mutex<Connection>>) -> Vec<ArtistDto> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT artist, COUNT(DISTINCT album), COUNT(*), MAX(cover)
+         FROM tracks WHERE artist != '' GROUP BY artist ORDER BY artist",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], |r| {
+        Ok(ArtistDto {
+            name: r.get(0)?,
+            albums: r.get(1)?,
+            tracks: r.get(2)?,
+            cover: r.get(3)?,
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn tracks_by_album(db: &Arc<Mutex<Connection>>, album: &str, artist: &str) -> Vec<TrackDto> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    query_tracks(
+        &conn,
+        &format!(
+            "SELECT {TRACK_COLS} FROM tracks WHERE album = ?1 AND artist = ?2
+             ORDER BY track_number, title"
+        ),
+        params![album, artist],
+    )
+}
+
+pub fn tracks_by_artist(db: &Arc<Mutex<Connection>>, artist: &str) -> Vec<TrackDto> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    query_tracks(
+        &conn,
+        &format!(
+            "SELECT {TRACK_COLS} FROM tracks WHERE artist = ?1
+             ORDER BY album, track_number, title"
+        ),
+        params![artist],
+    )
+}
+
+pub fn toggle_favorite(db: &Arc<Mutex<Connection>>, id: i64) -> Result<bool, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let n = conn
+        .execute("DELETE FROM favorites WHERE track_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    if n > 0 {
+        return Ok(false);
+    }
+    conn.execute("INSERT INTO favorites(track_id) VALUES (?1)", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+pub fn favorite_ids(db: &Arc<Mutex<Connection>>) -> Vec<i64> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare("SELECT track_id FROM favorites") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], |r| r.get::<_, i64>(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn favorites(db: &Arc<Mutex<Connection>>) -> Vec<TrackDto> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    query_tracks(
+        &conn,
+        &format!(
+            "SELECT t.{c} FROM tracks t JOIN favorites f ON f.track_id = t.id
+             ORDER BY t.album, t.track_number",
+            c = TRACK_COLS.replace(", ", ", t.").replace("t.id,", "id,")
+        ),
+        [],
+    )
+}
+
+pub fn create_playlist(db: &Arc<Mutex<Connection>>, name: &str) -> Result<i64, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    conn.execute(
+        "INSERT INTO playlists(name, created_at) VALUES (?1, ?2)",
+        params![name, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn delete_playlist(db: &Arc<Mutex<Connection>>, id: i64) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM playlists WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn rename_playlist(db: &Arc<Mutex<Connection>>, id: i64, name: &str) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE playlists SET name = ?2 WHERE id = ?1",
+        params![id, name],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn playlists(db: &Arc<Mutex<Connection>>) -> Vec<PlaylistDto> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare("SELECT id, name FROM playlists ORDER BY id") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], |r| {
+        Ok(PlaylistDto {
+            id: r.get(0)?,
+            name: r.get(1)?,
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn playlist_tracks(db: &Arc<Mutex<Connection>>, id: i64) -> Vec<TrackDto> {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    query_tracks(
+        &conn,
+        "SELECT t.id, t.path, t.title, t.artist, t.album, t.duration, t.track_number, t.year, t.cover
+             FROM playlist_items pi JOIN tracks t ON t.id = pi.track_id
+             WHERE pi.playlist_id = ?1 ORDER BY pi.position",
+        [id],
+    )
+}
+
+pub fn playlist_add(db: &Arc<Mutex<Connection>>, pid: i64, tid: i64) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let pos: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id = ?1",
+            [pid],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO playlist_items(playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+        params![pid, tid, pos],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn playlist_remove(db: &Arc<Mutex<Connection>>, pid: i64, tid: i64) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM playlist_items WHERE playlist_id = ?1 AND track_id = ?2",
+        params![pid, tid],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn set_setting(db: &Arc<Mutex<Connection>>, key: &str, value: &str) {
+    if let Ok(conn) = db.lock() {
+        let _ = conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        );
+    }
+}
+
+pub fn get_setting(db: &Arc<Mutex<Connection>>, key: &str) -> Option<String> {
+    let conn = db.lock().ok()?;
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+        r.get(0)
+    })
+    .ok()
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreDto {
+    pub queue: Vec<TrackDto>,
+    pub index: i64,
+    pub history: Vec<TrackDto>,
+    pub position: f64,
+    pub volume: f64,
+}
+
+pub fn save_queue_state(
+    db: &Arc<Mutex<Connection>>,
+    queue: &[(i64, String)],
+    index: usize,
+    history: &[(i64, String)],
+    position: f64,
+) {
+    let Ok(q) = serde_json::to_string(queue) else {
+        return;
+    };
+    let Ok(h) = serde_json::to_string(history) else {
+        return;
+    };
+    if let Ok(conn) = db.lock() {
+        let _ = conn.execute(
+            "INSERT INTO queue_state(id, queue, queue_index, history, position)
+             VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET queue=excluded.queue,
+               queue_index=excluded.queue_index, history=excluded.history,
+               position=excluded.position",
+            params![q, index as i64, h, position],
+        );
+    }
+}
+
+pub fn load_queue_state(db: &Arc<Mutex<Connection>>) -> Option<RestoreDto> {
+    let conn = db.lock().ok()?;
+    let (q, index, h, position): (String, i64, String, f64) = conn
+        .query_row(
+            "SELECT queue, queue_index, history, position FROM queue_state WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .ok()?;
+    let qv: Vec<(i64, String)> = serde_json::from_str(&q).ok()?;
+    let hv: Vec<(i64, String)> = serde_json::from_str(&h).ok()?;
+    let resolve = |v: Vec<(i64, String)>| -> Vec<TrackDto> {
+        let mut out = vec![];
+        for (_, path) in v {
+            let mut rows = query_tracks(
+                &conn,
+                &format!("SELECT {TRACK_COLS} FROM tracks WHERE path = ?1"),
+                [&path],
+            );
+            if let Some(r) = rows.pop() {
+                out.push(r);
+            }
+        }
+        out
+    };
+    Some(RestoreDto {
+        queue: resolve(qv),
+        index,
+        history: resolve(hv),
+        position,
+        volume: get_setting(db, "volume")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.8),
+    })
 }

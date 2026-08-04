@@ -1,10 +1,13 @@
-import { Disc3, Heart, ListMusic, Settings, Users } from "lucide-react";
+import AlbumsView from "./components/AlbumsView";
+import ArtistsView from "./components/ArtistsView";
 import EqPanel from "./components/EqPanel";
+import FavoritesView from "./components/FavoritesView";
 import ImmersiveView from "./components/ImmersiveView";
 import LibraryView from "./components/LibraryView";
-import PlaceholderView from "./components/PlaceholderView";
 import PlayerBar from "./components/PlayerBar";
+import PlaylistsView from "./components/PlaylistsView";
 import QueuePanel from "./components/QueuePanel";
+import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
 import { AppProvider, useStore } from "./lib/store";
@@ -18,11 +21,11 @@ function Shell() {
           <Sidebar />
           <main className="min-w-0 flex-1 overflow-y-auto">
             {s.view === "library" && <LibraryView />}
-            {s.view === "albums" && <PlaceholderView icon={Disc3} title="专辑" />}
-            {s.view === "artists" && <PlaceholderView icon={Users} title="歌手" />}
-            {s.view === "favorites" && <PlaceholderView icon={Heart} title="收藏" />}
-            {s.view === "playlists" && <PlaceholderView icon={ListMusic} title="播放列表" />}
-            {s.view === "settings" && <PlaceholderView icon={Settings} title="设置" />}
+            {s.view === "albums" && <AlbumsView />}
+            {s.view === "artists" && <ArtistsView />}
+            {s.view === "favorites" && <FavoritesView />}
+            {s.view === "playlists" && <PlaylistsView />}
+            {s.view === "settings" && <SettingsView />}
           </main>
           {s.queueOpen && <QueuePanel />}
           {s.eqOpen && <EqPanel />}

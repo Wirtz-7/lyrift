@@ -59,7 +59,9 @@ pub fn load_lyrics(path: &Path) -> LyricDto {
                 return LyricDto::Synced { lines };
             }
             if !text.trim().is_empty() {
-                return LyricDto::Plain { text: text.to_string() };
+                return LyricDto::Plain {
+                    text: text.to_string(),
+                };
             }
         }
     }

@@ -1,6 +1,6 @@
 mod database;
-mod library;
 mod dsp;
+mod library;
 mod lyrics;
 mod player;
 
@@ -16,6 +16,90 @@ pub struct AppState {
     pub covers_dir: PathBuf,
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
     pub player: Arc<player::PlayerService>,
+}
+
+#[tauri::command]
+fn search(q: String, state: tauri::State<AppState>) -> Vec<library::TrackDto> {
+    library::search_tracks(&state.db, &q)
+}
+
+#[tauri::command]
+fn albums(state: tauri::State<AppState>) -> Vec<library::AlbumDto> {
+    library::albums(&state.db)
+}
+
+#[tauri::command]
+fn artists(state: tauri::State<AppState>) -> Vec<library::ArtistDto> {
+    library::artists(&state.db)
+}
+
+#[tauri::command]
+fn album_tracks(
+    album: String,
+    artist: String,
+    state: tauri::State<AppState>,
+) -> Vec<library::TrackDto> {
+    library::tracks_by_album(&state.db, &album, &artist)
+}
+
+#[tauri::command]
+fn artist_tracks(artist: String, state: tauri::State<AppState>) -> Vec<library::TrackDto> {
+    library::tracks_by_artist(&state.db, &artist)
+}
+
+#[tauri::command]
+fn toggle_favorite(id: i64, state: tauri::State<AppState>) -> Result<bool, String> {
+    library::toggle_favorite(&state.db, id)
+}
+
+#[tauri::command]
+fn favorite_ids(state: tauri::State<AppState>) -> Vec<i64> {
+    library::favorite_ids(&state.db)
+}
+
+#[tauri::command]
+fn favorites(state: tauri::State<AppState>) -> Vec<library::TrackDto> {
+    library::favorites(&state.db)
+}
+
+#[tauri::command]
+fn create_playlist(name: String, state: tauri::State<AppState>) -> Result<i64, String> {
+    library::create_playlist(&state.db, &name)
+}
+
+#[tauri::command]
+fn delete_playlist(id: i64, state: tauri::State<AppState>) -> Result<(), String> {
+    library::delete_playlist(&state.db, id)
+}
+
+#[tauri::command]
+fn rename_playlist(id: i64, name: String, state: tauri::State<AppState>) -> Result<(), String> {
+    library::rename_playlist(&state.db, id, &name)
+}
+
+#[tauri::command]
+fn playlists(state: tauri::State<AppState>) -> Vec<library::PlaylistDto> {
+    library::playlists(&state.db)
+}
+
+#[tauri::command]
+fn playlist_tracks(id: i64, state: tauri::State<AppState>) -> Vec<library::TrackDto> {
+    library::playlist_tracks(&state.db, id)
+}
+
+#[tauri::command]
+fn playlist_add(pid: i64, tid: i64, state: tauri::State<AppState>) -> Result<(), String> {
+    library::playlist_add(&state.db, pid, tid)
+}
+
+#[tauri::command]
+fn playlist_remove(pid: i64, tid: i64, state: tauri::State<AppState>) -> Result<(), String> {
+    library::playlist_remove(&state.db, pid, tid)
+}
+
+#[tauri::command]
+fn restore(state: tauri::State<AppState>) -> library::RestoreDto {
+    state.player.restore().unwrap_or_default()
 }
 
 #[tauri::command]
@@ -93,11 +177,7 @@ fn list_tracks(state: tauri::State<AppState>) -> Vec<library::TrackDto> {
 }
 
 #[tauri::command]
-fn add_folder(
-    path: String,
-    state: tauri::State<AppState>,
-    app: AppHandle,
-) -> Result<(), String> {
+fn add_folder(path: String, state: tauri::State<AppState>, app: AppHandle) -> Result<(), String> {
     let p = PathBuf::from(&path);
     library::add_folder(&state.db, &p, &state.covers_dir, Some(&app))?;
     if let Ok(mut w) = state.watcher.lock() {
@@ -138,16 +218,15 @@ pub fn run() {
             // directory watcher with debounce -> rescan
             let (tx, rx) = mpsc::channel::<()>();
             let cb_tx = tx.clone();
-            let mut watcher = notify::recommended_watcher(
-                move |res: notify::Result<notify::Event>| {
+            let mut watcher =
+                notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                     if let Ok(ev) = res {
                         if ev.paths.iter().any(|p| library::is_audio(p)) {
                             let _ = cb_tx.send(());
                         }
                     }
-                },
-            )
-            .ok();
+                })
+                .ok();
             if let Some(w) = watcher.as_mut() {
                 // watch already-known folders at startup
                 for f in library::folder_paths(&db) {
@@ -165,9 +244,8 @@ pub fn run() {
                 }
             });
 
-            let player = Arc::new(
-                player::PlayerService::new().expect("open audio device"),
-            );
+            let player =
+                Arc::new(player::PlayerService::new(db.clone()).expect("open audio device"));
             player::spawn_emitter(player.clone(), app.handle().clone());
 
             app.manage(AppState {
@@ -184,6 +262,22 @@ pub fn run() {
             add_folder,
             remove_folder,
             rescan,
+            search,
+            albums,
+            artists,
+            album_tracks,
+            artist_tracks,
+            toggle_favorite,
+            favorite_ids,
+            favorites,
+            create_playlist,
+            delete_playlist,
+            rename_playlist,
+            playlists,
+            playlist_tracks,
+            playlist_add,
+            playlist_remove,
+            restore,
             lyrics_for,
             play_queue,
             queue_next,

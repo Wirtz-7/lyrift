@@ -28,18 +28,67 @@ export const api = {
   },
   async tracks(): Promise<Track[]> {
     const dtos = await invoke<TrackDto[]>("list_tracks");
-    return dtos.map((d) => ({
-      id: String(d.id),
-      path: d.path,
-      title: d.title,
-      artist: d.artist,
-      album: d.album,
-      duration: d.duration,
-      trackNumber: d.trackNumber ?? undefined,
-      year: d.year ?? undefined,
-      cover: d.cover ? convertFileSrc(d.cover) : undefined,
-    }));
+    return dtos.map(mapTrack);
   },
+  search(q: string): Promise<Track[]> {
+    return invoke<TrackDto[]>("search", { q }).then((d) => d.map(mapTrack));
+  },
+  albums(): Promise<AlbumDto[]> {
+    return invoke("albums");
+  },
+  artists(): Promise<ArtistDto[]> {
+    return invoke("artists");
+  },
+  albumTracks(album: string, artist: string): Promise<Track[]> {
+    return invoke<TrackDto[]>("album_tracks", { album, artist }).then((d) => d.map(mapTrack));
+  },
+  artistTracks(artist: string): Promise<Track[]> {
+    return invoke<TrackDto[]>("artist_tracks", { artist }).then((d) => d.map(mapTrack));
+  },
+  toggleFavorite(id: number): Promise<boolean> {
+    return invoke("toggle_favorite", { id });
+  },
+  favoriteIds(): Promise<number[]> {
+    return invoke("favorite_ids");
+  },
+  favorites(): Promise<Track[]> {
+    return invoke<TrackDto[]>("favorites").then((d) => d.map(mapTrack));
+  },
+  createPlaylist(name: string): Promise<number> {
+    return invoke("create_playlist", { name });
+  },
+  deletePlaylist(id: number) {
+    return invoke("delete_playlist", { id });
+  },
+  playlists(): Promise<{ id: number; name: string }[]> {
+    return invoke("playlists");
+  },
+  playlistTracks(id: number): Promise<Track[]> {
+    return invoke<TrackDto[]>("playlist_tracks", { id }).then((d) => d.map(mapTrack));
+  },
+  playlistAdd(pid: number, tid: number) {
+    return invoke("playlist_add", { pid, tid });
+  },
+  playlistRemove(pid: number, tid: number) {
+    return invoke("playlist_remove", { pid, tid });
+  },
+  async restore(): Promise<RestoreDto> {
+    const r = await invoke<{
+      queue: TrackDto[];
+      index: number;
+      history: TrackDto[];
+      position: number;
+      volume: number;
+    }>("restore");
+    return {
+      queue: r.queue.map(mapTrack),
+      index: r.index,
+      history: r.history.map(mapTrack),
+      position: r.position,
+      volume: r.volume,
+    };
+  },
+
   async addFolder(): Promise<boolean> {
     const sel = await open({ directory: true, multiple: false });
     if (!sel) return false;
@@ -104,6 +153,43 @@ export const api = {
     return listen("track-ended", () => cb());
   },
 };
+
+function mapTrack(d: TrackDto): Track {
+  return {
+    id: String(d.id),
+    path: d.path,
+    title: d.title,
+    artist: d.artist,
+    album: d.album,
+    duration: d.duration,
+    trackNumber: d.trackNumber ?? undefined,
+    year: d.year ?? undefined,
+    cover: d.cover ? convertFileSrc(d.cover) : undefined,
+  };
+}
+
+export interface AlbumDto {
+  name: string;
+  artist: string;
+  year: number | null;
+  cover: string | null;
+  count: number;
+}
+
+export interface ArtistDto {
+  name: string;
+  albums: number;
+  tracks: number;
+  cover: string | null;
+}
+
+export interface RestoreDto {
+  queue: Track[];
+  index: number;
+  history: Track[];
+  position: number;
+  volume: number;
+}
 
 export interface PlaybackEvent {
   trackId: number | null;

@@ -52,6 +52,11 @@ interface Store {
   rg: string;
   updateEq: (patch: Partial<EqSettings>) => void;
   setRg: (mode: string) => void;
+  playlists: { id: number; name: string }[];
+  createPlaylist: (name: string) => void;
+  deletePlaylist: (id: number) => void;
+  addToPlaylist: (pid: number, track: Track) => void;
+  getPlaylistTracks: (pid: number) => Promise<Track[]>;
 
   playTrack: (t: Track, context?: Track[]) => void;
   playQueueAt: (index: number) => void;
@@ -64,6 +69,11 @@ interface Store {
   cycleRepeat: () => void;
   toggleFavorite: (id: string) => void;
 }
+
+// ponytail: browser-mode playlists live in module memory; Tauri uses SQLite
+let mockPlaylists: { id: number; name: string }[] = [];
+let mockPlaylistTracks = new Map<number, Track[]>();
+let mockNextPid = 1;
 
 function idxOf(list: Track[], id: string): number {
   return list.findIndex((x) => x.id === id);
@@ -108,6 +118,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [queueIndex, setQueueIndex] = useState(-1);
   const [history, setHistory] = useState<Track[]>([]);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [playlistsState, setPlaylistsState] = useState<{ id: number; name: string }[]>([]);
   const [eq, setEq] = useState<EqSettings>({ enabled: false, preamp: 0, gains: Array(10).fill(0) });
   const [rg, setRgState] = useState("off");
 
@@ -363,13 +374,113 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setRgState(mode);
     if (isTauri) api.setReplayGain(mode).catch(() => {});
   }, []);
-  const toggleFavorite = useCallback((id: string) => {
-    setFavorites((f) => {
-      const n = new Set(f);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
-    });
+  const toggleFavorite = useCallback(
+    (id: string) => {
+      if (isTauri) {
+        api
+          .toggleFavorite(Number(id))
+          .then((now) =>
+            setFavorites((f) => {
+              const n = new Set(f);
+              if (now) n.add(id);
+              else n.delete(id);
+              return n;
+            }),
+          )
+          .catch((e) => flashError(String(e)));
+        return;
+      }
+      setFavorites((f) => {
+        const n = new Set(f);
+        if (n.has(id)) n.delete(id);
+        else n.add(id);
+        return n;
+      });
+    },
+    [flashError],
+  );
+
+  // favorites init from backend
+  useEffect(() => {
+    if (!isTauri) return;
+    api.favoriteIds().then((ids) => setFavorites(new Set(ids.map(String)))).catch(() => {});
+  }, []);
+
+  // restore last session (queue/position/settings) at startup
+  useEffect(() => {
+    if (!isTauri) return;
+    api
+      .restore()
+      .then((r) => {
+        setPb((p) => ({ ...p, volume: r.volume || p.volume }));
+        if (!r.queue.length) return;
+        setQueue(r.queue);
+        setHistory(r.history);
+        const index = Math.min(Math.max(0, r.index), r.queue.length - 1);
+        setQueueIndex(index);
+        const t = r.queue[index];
+        if (t) {
+          setPb((p) => ({
+            ...p,
+            track: t,
+            position: r.position,
+            duration: t.duration,
+            playing: false,
+          }));
+          if (t.path) api.lyricsFor(t.path).then(setLyrics).catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const refreshPlaylists = useCallback(() => {
+    if (isTauri) api.playlists().then(setPlaylistsState).catch(() => {});
+  }, []);
+  useEffect(() => {
+    refreshPlaylists();
+  }, [refreshPlaylists]);
+
+  const createPlaylist = useCallback(
+    (name: string) => {
+      if (isTauri) {
+        api.createPlaylist(name).then(refreshPlaylists).catch((e) => flashError(String(e)));
+        return;
+      }
+      const p = { id: mockNextPid++, name };
+      mockPlaylists = [...mockPlaylists, p];
+      setPlaylistsState(mockPlaylists);
+    },
+    [refreshPlaylists, flashError],
+  );
+
+  const deletePlaylist = useCallback(
+    (id: number) => {
+      if (isTauri) {
+        api.deletePlaylist(id).then(refreshPlaylists).catch((e) => flashError(String(e)));
+        return;
+      }
+      mockPlaylists = mockPlaylists.filter((p) => p.id !== id);
+      mockPlaylistTracks.delete(id);
+      setPlaylistsState(mockPlaylists);
+    },
+    [refreshPlaylists, flashError],
+  );
+
+  const addToPlaylist = useCallback(
+    (pid: number, track: Track) => {
+      if (isTauri) {
+        api.playlistAdd(pid, Number(track.id)).catch((e) => flashError(String(e)));
+        return;
+      }
+      const list = mockPlaylistTracks.get(pid) ?? [];
+      mockPlaylistTracks.set(pid, [...list, track]);
+    },
+    [flashError],
+  );
+
+  const getPlaylistTracks = useCallback(async (pid: number): Promise<Track[]> => {
+    if (isTauri) return api.playlistTracks(pid).catch(() => []);
+    return mockPlaylistTracks.get(pid) ?? [];
   }, []);
 
   // space toggles play unless typing
@@ -405,6 +516,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       rg,
       updateEq,
       setRg,
+      playlists: playlistsState,
+      createPlaylist,
+      deletePlaylist,
+      addToPlaylist,
+      getPlaylistTracks,
       lyrics,
       queue,
       queueIndex,
@@ -422,9 +538,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toggleFavorite,
     }),
     [
-      view, immersive, queueOpen, eqOpen, library, scanProgress, reloadLibrary, addFolder, pb, playerError, eq, rg, updateEq, setRg, lyrics,
+      view, immersive, queueOpen, eqOpen, library, scanProgress, reloadLibrary, addFolder, pb, playerError, eq, rg, updateEq, setRg, playlistsState, createPlaylist, deletePlaylist, addToPlaylist, getPlaylistTracks, lyrics,
       queue, queueIndex, history, favorites, playTrack, playQueueAt, togglePlay, next, prev,
-      seek, setVolume, toggleShuffle, cycleRepeat, toggleFavorite, updateEq, setRg,
+      seek, setVolume, toggleShuffle, cycleRepeat, toggleFavorite, updateEq, setRg, createPlaylist, deletePlaylist, addToPlaylist, getPlaylistTracks,
     ],
   );
 

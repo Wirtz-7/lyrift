@@ -140,12 +140,12 @@ impl<I: Source<Item = f32>> Source for EqSource<I> {
         self.input.total_duration()
     }
     fn try_seek(&mut self, pos: std::time::Duration) -> Result<(), rodio::source::SeekError> {
-        let r = self.input.try_seek(pos)?;
+        self.input.try_seek(pos)?;
         // zero filter states to avoid post-seek transients
         for f in self.filters.iter_mut() {
             f.s1 = 0.0;
             f.s2 = 0.0;
         }
-        Ok(r)
+        Ok(())
     }
 }

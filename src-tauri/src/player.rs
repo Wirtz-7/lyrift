@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use lofty::prelude::{ItemKey, TaggedFileExt};
-use lofty::tag::Tag;
 use lofty::probe::Probe;
 use rodio::decoder::DecoderBuilder;
 use rodio::source::{LimitSettings, Source};
@@ -36,7 +35,7 @@ pub struct QueueItemDto {
     pub path: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RepeatMode {
     Off,
@@ -44,7 +43,7 @@ pub enum RepeatMode {
     One,
 }
 
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RgMode {
     Off,
@@ -71,6 +70,7 @@ struct QueueState {
     repeat: RepeatMode,
     preloaded: bool,
     pending: Option<usize>,
+    history: Vec<(i64, String)>,
 }
 
 impl Default for QueueState {
@@ -82,6 +82,7 @@ impl Default for QueueState {
             repeat: RepeatMode::Off,
             preloaded: false,
             pending: None,
+            history: vec![],
         }
     }
 }
@@ -94,6 +95,8 @@ pub struct PlayerService {
     eq: Arc<RwLock<EqShared>>,
     rg: Mutex<RgMode>,
     duration: Mutex<f64>,
+    db: Arc<Mutex<rusqlite::Connection>>,
+    ticks: Mutex<u32>,
 }
 
 fn parse_db(tag: Option<&lofty::tag::Tag>, key: &ItemKey) -> Option<f64> {
@@ -135,7 +138,7 @@ fn replay_gain_lin(tag: Option<&lofty::tag::Tag>, mode: RgMode) -> f64 {
 }
 
 impl PlayerService {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(db: Arc<Mutex<rusqlite::Connection>>) -> Result<Self, String> {
         // ponytail: fixed 4096-frame buffer; WSLg's virtual RDP sink crackles
         // with cpal's small default buffer. Revisit only if latency matters.
         let device = DeviceSinkBuilder::from_default_device()
@@ -151,6 +154,8 @@ impl PlayerService {
             eq: EqShared::new(),
             rg: Mutex::new(RgMode::Off),
             duration: Mutex::new(0.0),
+            db,
+            ticks: Mutex::new(0),
         })
     }
 
@@ -165,7 +170,10 @@ impl PlayerService {
             .with_gapless(true)
             .build()
             .map_err(|e| format!("解码失败: {e}"))?;
-        let duration = decoder.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        let duration = decoder
+            .total_duration()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
 
         let tag = Probe::open(path)
             .ok()
@@ -241,20 +249,30 @@ impl PlayerService {
         {
             let mut q = self.queue.lock().unwrap();
             q.index = index;
+            q.history.insert(0, (id, path.clone()));
+            q.history.truncate(100);
             self.preload(&mut q);
         }
+        self.persist();
         if let Some(app) = emit {
             let _ = app.emit("track-changed", TrackChanged { index, id });
         }
         Ok(duration)
     }
 
-    pub fn play_queue(&self, items: Vec<QueueItemDto>, index: usize) -> Result<PlaybackEvent, String> {
+    pub fn play_queue(
+        &self,
+        items: Vec<QueueItemDto>,
+        index: usize,
+    ) -> Result<PlaybackEvent, String> {
         {
             let mut q = self.queue.lock().unwrap();
             q.items = items
                 .into_iter()
-                .map(|i| QueueItem { id: i.id, path: i.path })
+                .map(|i| QueueItem {
+                    id: i.id,
+                    path: i.path,
+                })
                 .collect();
         }
         self.load_at(index, &None)?;
@@ -316,7 +334,9 @@ impl PlayerService {
     }
 
     pub fn set_volume(&self, v: f64) -> PlaybackEvent {
-        self.player.set_volume(v.clamp(0.0, 1.0) as f32);
+        let v = v.clamp(0.0, 1.0);
+        self.player.set_volume(v as f32);
+        crate::library::set_setting(&self.db, "volume", &v.to_string());
         self.snapshot()
     }
 
@@ -330,6 +350,9 @@ impl PlayerService {
 
     pub fn set_eq(&self, settings: crate::dsp::EqSettings) {
         if let Ok(mut g) = self.eq.write() {
+            if let Ok(json) = serde_json::to_string(&settings) {
+                crate::library::set_setting(&self.db, "eq", &json);
+            }
             g.settings = settings;
             g.gen += 1;
         }
@@ -337,6 +360,7 @@ impl PlayerService {
 
     pub fn set_replay_gain(&self, mode: RgMode) {
         *self.rg.lock().unwrap() = mode;
+        crate::library::set_setting(&self.db, "rg", &format!("{mode:?}").to_lowercase());
     }
 
     pub fn audio_settings(&self) -> AudioSettings {
@@ -348,6 +372,74 @@ impl PlayerService {
                 .unwrap_or_default(),
             replay_gain: *self.rg.lock().unwrap(),
         }
+    }
+
+    fn persist(&self) {
+        let q = self.queue.lock().unwrap();
+        let queue: Vec<(i64, String)> = q.items.iter().map(|i| (i.id, i.path.clone())).collect();
+        let history = q.history.clone();
+        let index = q.index;
+        drop(q);
+        let position = self.player.get_pos().as_secs_f64();
+        crate::library::save_queue_state(&self.db, &queue, index, &history, position);
+    }
+
+    /// apply persisted settings and queue (paused) at startup
+    pub fn restore(&self) -> Option<crate::library::RestoreDto> {
+        if let Some(eq_json) = crate::library::get_setting(&self.db, "eq") {
+            if let Ok(eq) = serde_json::from_str::<crate::dsp::EqSettings>(&eq_json) {
+                self.set_eq(eq);
+            }
+        }
+        if let Some(rg) = crate::library::get_setting(&self.db, "rg") {
+            let mode = match rg.as_str() {
+                "track" => RgMode::Track,
+                "album" => RgMode::Album,
+                _ => RgMode::Off,
+            };
+            *self.rg.lock().unwrap() = mode;
+        }
+        let volume = crate::library::get_setting(&self.db, "volume")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.8);
+        self.player.set_volume(volume as f32);
+
+        let dto = crate::library::load_queue_state(&self.db)?;
+        if dto.queue.is_empty() {
+            return Some(dto);
+        }
+        {
+            let mut q = self.queue.lock().unwrap();
+            q.items = dto
+                .queue
+                .iter()
+                .map(|t| QueueItem {
+                    id: t.id,
+                    path: t.path.clone(),
+                })
+                .collect();
+            q.history = dto.history.iter().map(|t| (t.id, t.path.clone())).collect();
+        }
+        let index = dto.index.max(0) as usize;
+        if let Ok((src, duration)) = {
+            let q = self.queue.lock().unwrap();
+            q.items
+                .get(index)
+                .map(|i| i.path.clone())
+                .map(|p| self.build_source(&p))
+                .unwrap_or(Err("empty".into()))
+        } {
+            self.player.clear();
+            self.player.append(src);
+            self.player.pause();
+            *self.duration.lock().unwrap() = duration;
+            let _ = self
+                .player
+                .try_seek(std::time::Duration::from_secs_f64(dto.position));
+            let mut q = self.queue.lock().unwrap();
+            q.index = index;
+        }
+        Some(dto)
     }
 
     pub fn snapshot(&self) -> PlaybackEvent {
@@ -362,6 +454,13 @@ impl PlayerService {
 
     /// emitter-thread tick: gapless promotion + auto-advance
     pub fn tick(&self, app: &AppHandle) {
+        let mut ticks = self.ticks.lock().unwrap();
+        *ticks += 1;
+        let do_persist = (*ticks).is_multiple_of(20);
+        drop(ticks);
+        if do_persist {
+            self.persist();
+        }
         let promote = {
             let q = self.queue.lock().unwrap();
             q.preloaded && self.player.len() == 1
@@ -447,10 +546,16 @@ mod tests {
         let wav = dir.join("tone.wav");
         std::fs::write(&wav, wav_bytes(3)).unwrap();
 
-        let svc = PlayerService::new().expect("open default audio device");
+        let db = Arc::new(Mutex::new(
+            crate::database::open(std::path::Path::new(":memory:")).unwrap(),
+        ));
+        let svc = PlayerService::new(db).expect("open default audio device");
         let ev = svc
             .play_queue(
-                vec![QueueItemDto { id: 1, path: wav.to_string_lossy().into_owned() }],
+                vec![QueueItemDto {
+                    id: 1,
+                    path: wav.to_string_lossy().into_owned(),
+                }],
                 0,
             )
             .expect("load wav");
@@ -458,7 +563,11 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(700));
         let ev = svc.snapshot();
-        assert!(ev.position > 0.2, "position should advance, got {}", ev.position);
+        assert!(
+            ev.position > 0.2,
+            "position should advance, got {}",
+            ev.position
+        );
 
         svc.seek(1.5).expect("seek");
         let ev = svc.snapshot();

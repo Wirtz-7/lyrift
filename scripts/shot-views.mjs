@@ -1,0 +1,13 @@
+import { chromium } from "playwright";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+await page.goto("http://127.0.0.1:1420/");
+await page.waitForTimeout(1400);
+await page.click('button:has-text("专辑")');
+await page.waitForTimeout(400);
+await page.screenshot({ path: "/tmp/shots/07-albums.png" });
+await page.click('button:has-text("播放列表")');
+await page.waitForTimeout(400);
+await page.screenshot({ path: "/tmp/shots/08-playlists.png" });
+await browser.close();
+console.log("ok");
