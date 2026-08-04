@@ -48,12 +48,22 @@ export default function ImmersiveView() {
       ? lyrics.lines.reduce((acc, l, i) => (l.time <= pb.position ? i : acc), -1)
       : -1;
 
+  const lyricsRef = useRef<HTMLDivElement | null>(null);
   const lineRefs = useRef<(HTMLButtonElement | null)[]>([]);
   useEffect(() => {
-    if (current < 0) return;
-    const el = lineRefs.current[current];
-    el?.scrollIntoView({
-      block: "center",
+    const container = lyricsRef.current;
+    const line = lineRefs.current[current];
+    if (!container || !line) return;
+    const containerRect = container.getBoundingClientRect();
+    const lineRect = line.getBoundingClientRect();
+    container.scrollTo({
+      top: Math.max(
+        0,
+        container.scrollTop +
+          lineRect.top -
+          containerRect.top -
+          (container.clientHeight - lineRect.height) / 2,
+      ),
       behavior: reducedMotion() ? "auto" : "smooth",
     });
   }, [current]);
@@ -195,6 +205,7 @@ export default function ImmersiveView() {
         <div className="relative min-w-0 flex-1">
           {lyrics.kind === "synced" && (
             <div
+              ref={lyricsRef}
               onScroll={onLyricsScroll}
               className={`lyrics-scroll h-full overflow-x-hidden overflow-y-auto py-[30vh] pr-6 ${
                 scrolling ? "lyrics-scrolling" : ""

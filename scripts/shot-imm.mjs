@@ -5,6 +5,11 @@ import { chromium } from "playwright";
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const errors = [];
+await page.addInitScript(() => {
+  Element.prototype.scrollIntoView = () => {
+    throw new Error("lyrics must not call scrollIntoView");
+  };
+});
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 page.on("pageerror", (e) => errors.push(e.message));
 
@@ -54,8 +59,20 @@ await page.waitForTimeout(260);
 assert(!(await lyrics.evaluate((el) => el.classList.contains("lyrics-scrolling"))));
 const blur = Number((await blurred.evaluate((el) => getComputedStyle(el).filter)).match(/[\d.]+/)?.[0] ?? 0);
 assert(blur <= 1.25, `inactive lyric blur is ${blur}px`);
+const autoScrollBefore = await lyrics.evaluate((el) => el.scrollTop);
 await page.locator(".lyric-line").nth(6).click();
 await page.waitForTimeout(500);
+assert((await lyrics.evaluate((el) => el.scrollTop)) > autoScrollBefore, "active lyric did not scroll");
+assert.deepEqual(
+  await page.evaluate(() => ({
+    window: window.scrollY,
+    document: document.documentElement.scrollTop,
+    body: document.body.scrollTop,
+  })),
+  { window: 0, document: 0, body: 0 },
+  "active lyric scrolled the outer viewport",
+);
+assert.deepEqual(await immersive.boundingBox(), { x: 0, y: 0, width: 1280, height: 800 });
 assert.deepEqual(errors, []);
 
 await mkdir("/tmp/shots", { recursive: true });

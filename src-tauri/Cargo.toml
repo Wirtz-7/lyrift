@@ -1,6 +1,6 @@
 [package]
 name = "lyrift"
-version = "0.1.2"
+version = "0.1.3"
 description = "Lyrift (流律) - a local music player"
 authors = ["Lyrift"]
 edition = "2021"
