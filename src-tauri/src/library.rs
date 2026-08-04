@@ -792,7 +792,7 @@ pub fn get_setting(db: &Arc<Mutex<Connection>>, key: &str) -> Option<String> {
     .ok()
 }
 
-#[derive(Serialize, Clone, Default)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreDto {
     pub queue: Vec<TrackDto>,
@@ -800,6 +800,20 @@ pub struct RestoreDto {
     pub history: Vec<TrackDto>,
     pub position: f64,
     pub volume: f64,
+    pub last_volume: f64,
+}
+
+impl Default for RestoreDto {
+    fn default() -> Self {
+        Self {
+            queue: vec![],
+            index: 0,
+            history: vec![],
+            position: 0.0,
+            volume: 0.8,
+            last_volume: 0.8,
+        }
+    }
 }
 
 pub fn save_queue_state(
@@ -858,18 +872,21 @@ pub fn load_queue_state(db: &Arc<Mutex<Connection>>) -> Option<RestoreDto> {
         .and_then(|id| queue.iter().position(|track| track.id == id))
         .unwrap_or(0) as i64;
     let history = resolve(hv);
-    let volume = conn
-        .query_row("SELECT value FROM settings WHERE key = 'volume'", [], |r| {
+    let setting = |key| {
+        conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
             r.get::<_, String>(0)
         })
         .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.8);
+        .and_then(|value| value.parse().ok())
+    };
+    let volume = setting("volume").unwrap_or(0.8);
+    let last_volume = setting("last_volume").unwrap_or(if volume > 0.0 { volume } else { 0.8 });
     Some(RestoreDto {
         queue,
         index,
         history,
         position,
         volume,
+        last_volume,
     })
 }

@@ -184,7 +184,7 @@ export default function ImmersiveView() {
         <div className="relative min-w-0 flex-1">
           {lyrics.kind === "synced" && (
             <div
-              className="h-full overflow-y-auto py-[30vh] pr-6"
+              className="h-full overflow-x-hidden overflow-y-auto py-[30vh] pr-6"
               style={{
                 maskImage: "linear-gradient(transparent, black 18%, black 82%, transparent)",
                 WebkitMaskImage:
@@ -203,18 +203,18 @@ export default function ImmersiveView() {
                       lineRefs.current[i] = el;
                     }}
                     onClick={() => s.seek(l.time)}
-                    className="lyric-line mb-8 block text-left"
+                    className="lyric-line mb-8 block w-full max-w-full text-left"
                     style={{ opacity, filter: blur ? `blur(${blur}px)` : undefined }}
                   >
                     <span
-                      className={`block text-[26px] font-semibold leading-snug ${
+                      className={`block break-words text-[26px] font-semibold leading-snug ${
                         ad === 0 ? "text-white" : "text-white/80"
                       }`}
                     >
                       {l.text}
                     </span>
                     {l.translation && (
-                      <span className="mt-2 block text-[13.5px] text-white/60">
+                      <span className="mt-2 block whitespace-pre-line break-words text-[13.5px] text-white/60">
                         {l.translation}
                       </span>
                     )}

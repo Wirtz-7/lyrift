@@ -25,18 +25,35 @@ pub enum LyricDto {
 pub struct LineDto {
     pub time: f64,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translation: Option<String>,
+}
+
+fn merge_translations(lines: impl IntoIterator<Item = LineDto>) -> Vec<LineDto> {
+    let mut merged: Vec<LineDto> = vec![];
+    for line in lines {
+        if let Some(previous) = merged.last_mut() {
+            if (previous.time - line.time).abs() < 0.001 {
+                let translation = previous.translation.get_or_insert_with(String::new);
+                if !translation.is_empty() {
+                    translation.push('\n');
+                }
+                translation.push_str(&line.text);
+                continue;
+            }
+        }
+        merged.push(line);
+    }
+    merged
 }
 
 fn parse_lrc(text: &str) -> Option<Vec<LineDto>> {
     let lyrics = lrc::Lyrics::from_str(text).ok()?;
-    let lines: Vec<LineDto> = lyrics
-        .get_timed_lines()
-        .iter()
-        .map(|(t, s)| LineDto {
-            time: t.get_timestamp() as f64 / 1000.0,
-            text: s.to_string(),
-        })
-        .collect();
+    let lines = merge_translations(lyrics.get_timed_lines().iter().map(|(t, s)| LineDto {
+        time: t.get_timestamp() as f64 / 1000.0,
+        text: s.to_string(),
+        translation: None,
+    }));
     if lines.is_empty() {
         None
     } else {
@@ -74,9 +91,11 @@ fn sylt_lines(tag: Option<&Id3v2Tag>, mpeg_frame_seconds: Option<f64>) -> Option
             .map(|(time, text)| LineDto {
                 time: f64::from(time) * seconds_per_tick,
                 text,
+                translation: None,
             })
             .collect();
         lines.sort_by(|a, b| a.time.total_cmp(&b.time));
+        let lines = merge_translations(lines);
         if !lines.is_empty() {
             return Some(lines);
         }
@@ -165,7 +184,7 @@ mod tests {
         std::fs::write(&audio, b"fake").unwrap();
         std::fs::write(
             dir.join("song.lrc"),
-            "[00:01.50] first line\n[00:05.00] second line\n",
+            "[00:01.50] first line\n[00:01.50] translated line\n[00:05.00] second line\n",
         )
         .unwrap();
 
@@ -173,6 +192,7 @@ mod tests {
             LyricDto::Synced { lines } => {
                 assert_eq!(lines.len(), 2);
                 assert!((lines[0].time - 1.5).abs() < 1e-6);
+                assert_eq!(lines[0].translation.as_deref(), Some("translated line"));
                 assert_eq!(lines[1].text, "second line");
             }
             other => panic!("expected synced, got {other:?}"),

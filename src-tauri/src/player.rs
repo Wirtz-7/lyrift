@@ -166,9 +166,13 @@ impl PlayerService {
         path: &str,
     ) -> Result<(Box<dyn Source<Item = f32> + Send>, f64), String> {
         let file = File::open(path).map_err(|e| format!("无法打开音频文件: {e}"))?;
+        let byte_len = file
+            .metadata()
+            .map_err(|e| format!("无法读取音频文件大小: {e}"))?
+            .len();
         let decoder = DecoderBuilder::new()
             .with_data(BufReader::new(file))
-            .with_seekable(true)
+            .with_byte_len(byte_len)
             .with_gapless(true)
             .build()
             .map_err(|e| format!("解码失败: {e}"))?;
@@ -369,6 +373,9 @@ impl PlayerService {
         let v = v.clamp(0.0, 1.0);
         self.player.set_volume(v as f32);
         crate::library::set_setting(&self.db, "volume", &v.to_string());
+        if v > 0.0 {
+            crate::library::set_setting(&self.db, "last_volume", &v.to_string());
+        }
         self.snapshot()
     }
 
@@ -438,9 +445,17 @@ impl PlayerService {
         let volume = crate::library::get_setting(&self.db, "volume")
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(0.8);
+        let last_volume = crate::library::get_setting(&self.db, "last_volume")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(if volume > 0.0 { volume } else { 0.8 });
         self.player.set_volume(volume as f32);
 
-        let dto = crate::library::load_queue_state(&self.db)?;
+        let dto =
+            crate::library::load_queue_state(&self.db).unwrap_or(crate::library::RestoreDto {
+                volume,
+                last_volume,
+                ..Default::default()
+            });
         if dto.queue.is_empty() {
             return Some(dto);
         }
@@ -610,6 +625,13 @@ mod tests {
             .unwrap();
         }
         let svc = PlayerService::new(db.clone()).expect("open default audio device");
+        svc.set_volume(0.25);
+        svc.set_volume(0.0);
+        let empty = svc.restore().expect("restore settings without a queue");
+        assert!(empty.queue.is_empty());
+        assert_eq!(empty.volume, 0.0);
+        assert!((empty.last_volume - 0.25).abs() < 1e-6);
+
         let ev = svc
             .play_queue(
                 vec![
@@ -656,6 +678,7 @@ mod tests {
         assert!(ev.playing);
 
         svc.set_volume(0.3);
+        svc.set_volume(0.0);
         assert!(!svc.toggle().playing);
         svc.persist();
         drop(svc);
@@ -663,7 +686,8 @@ mod tests {
         let restored = PlayerService::new(db).expect("reopen default audio device");
         let state = restored.restore().expect("restore persisted queue");
         assert_eq!(state.queue.len(), 2);
-        assert!((state.volume - 0.3).abs() < 1e-6);
+        assert_eq!(state.volume, 0.0);
+        assert!((state.last_volume - 0.3).abs() < 1e-6);
         let ev = restored.snapshot();
         assert!(!ev.playing);
         assert!((ev.position - state.position).abs() < 1e-6);

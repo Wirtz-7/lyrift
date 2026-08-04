@@ -28,7 +28,12 @@ export default function PlayerBar() {
   const fav = t ? s.favorites.has(t.id) : false;
 
   return (
-    <footer className="grid h-[92px] shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-6 border-t border-line bg-panel px-4">
+    <footer
+      onClick={(e) => {
+        if (!(e.target as Element).closest("button, input")) s.setImmersive(true);
+      }}
+      className="grid h-[92px] shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-6 border-t border-line bg-panel px-4"
+    >
       {/* left: track info */}
       <div className="flex min-w-0 items-center gap-3">
         <CoverArt
@@ -134,7 +139,7 @@ export default function PlayerBar() {
           <Expand className="h-4.5 w-4.5" />
         </button>
         <button
-          onClick={() => s.setVolume(pb.volume === 0 ? 0.8 : 0)}
+          onClick={() => s.setVolume(pb.volume === 0 ? pb.lastVolume : 0)}
           title={pb.volume === 0 ? "取消静音" : "静音"}
           className="rounded-md p-2 text-white/50 hover:text-white"
         >

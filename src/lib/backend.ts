@@ -79,6 +79,7 @@ export const api = {
       history: TrackDto[];
       position: number;
       volume: number;
+      lastVolume: number;
     }>("restore");
     return {
       queue: r.queue.map(mapTrack),
@@ -86,6 +87,7 @@ export const api = {
       history: r.history.map(mapTrack),
       position: r.position,
       volume: r.volume,
+      lastVolume: r.lastVolume,
     };
   },
 
@@ -189,6 +191,7 @@ export interface RestoreDto {
   history: Track[];
   position: number;
   volume: number;
+  lastVolume: number;
 }
 
 export interface PlaybackEvent {

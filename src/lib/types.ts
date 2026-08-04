@@ -29,6 +29,7 @@ export interface PlaybackSnapshot {
   position: number;
   duration: number;
   volume: number;
+  lastVolume: number;
   shuffle: boolean;
   repeat: RepeatMode;
 }

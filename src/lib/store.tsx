@@ -103,6 +103,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     position: 0,
     duration: 0,
     volume: 0.8,
+    lastVolume: 0.8,
     shuffle: false,
     repeat: "off",
   });
@@ -123,6 +124,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [rg, setRgState] = useState("off");
 
   const loadTimer = useRef<number | undefined>(undefined);
+  const lyricRequest = useRef(0);
+  const loadTrackLyrics = useCallback((track: Track) => {
+    const request = ++lyricRequest.current;
+    setLyrics({ kind: "none" });
+    if (!isTauri) {
+      setLyrics(mockLyrics(track.id));
+      return;
+    }
+    if (!track.path) return;
+    api
+      .lyricsFor(track.path)
+      .then((next) => {
+        if (request === lyricRequest.current) setLyrics(next);
+      })
+      .catch(() => {
+        if (request === lyricRequest.current) setLyrics({ kind: "none" });
+      });
+  }, []);
 
   const refreshTracks = useCallback(async () => {
     const tracks = await api.tracks();
@@ -175,11 +194,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setQueueIndex(e.index);
       setQueue((q) => {
         const t = q[e.index];
-        if (t) {
+        if (t?.id === String(e.id)) {
           setPb((p) => ({ ...p, track: t, position: 0, duration: t.duration }));
-          if (t.path) {
-            api.lyricsFor(t.path).then(setLyrics).catch(() => setLyrics({ kind: "none" }));
-          }
+          loadTrackLyrics(t);
         }
         return q;
       });
@@ -190,7 +207,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       )
       .then((f) => uns.push(f));
     return () => uns.forEach((f) => f());
-  }, [refreshTracks]);
+  }, [refreshTracks, loadTrackLyrics]);
 
   const addFolder = useCallback(async () => {
     if (isTauri) {
@@ -208,15 +225,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const startTrack = useCallback(
     (t: Track) => {
-      if (isTauri && t.path) {
-        api.lyricsFor(t.path).then(setLyrics).catch(() => setLyrics({ kind: "none" }));
-      } else {
-        setLyrics(mockLyrics(t.id));
-      }
+      loadTrackLyrics(t);
       setHistory((h) => [t, ...h.filter((x) => x.id !== t.id)].slice(0, 100));
       setPb((p) => ({ ...p, track: t, playing: true, position: 0, duration: t.duration }));
     },
-    [flashError],
+    [loadTrackLyrics],
   );
 
   const playTrack = useCallback(
@@ -346,7 +359,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setVolume = useCallback((v: number) => {
     const vol = Math.min(Math.max(0, v), 1);
     if (isTauri) api.setVolume(vol).catch(() => {});
-    setPb((p) => ({ ...p, volume: vol }));
+    setPb((p) => ({
+      ...p,
+      volume: vol,
+      lastVolume: vol > 0 ? vol : p.lastVolume,
+    }));
   }, []);
   const toggleShuffle = useCallback(() => {
     setPb((p) => {
@@ -412,7 +429,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api
       .restore()
       .then((r) => {
-        setPb((p) => ({ ...p, volume: r.volume }));
+        setPb((p) => ({
+          ...p,
+          volume: r.volume,
+          lastVolume: r.lastVolume,
+        }));
         if (!r.queue.length) return;
         setQueue(r.queue);
         setHistory(r.history);
@@ -427,11 +448,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
             duration: t.duration,
             playing: false,
           }));
-          if (t.path) api.lyricsFor(t.path).then(setLyrics).catch(() => {});
+          loadTrackLyrics(t);
         }
       })
       .catch(() => {});
-  }, []);
+  }, [loadTrackLyrics]);
 
   const refreshPlaylists = useCallback(() => {
     if (isTauri) api.playlists().then(setPlaylistsState).catch(() => {});

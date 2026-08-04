@@ -77,7 +77,7 @@ export default function SettingsView() {
       <section className="mt-8">
         <h2 className="text-[14px] font-medium text-white/80">关于</h2>
         <p className="mt-1 text-[12.5px] leading-6 text-white/40">
-          Lyrift（流律）v0.1.0 — Tauri 2 + Rust + React 本地音乐播放器。
+          Lyrift（流律）v0.1.1 — Tauri 2 + Rust + React 本地音乐播放器。
           <br />
           支持 MP3 / FLAC / WAV / OGG / M4A，本地与内嵌歌词，10 段均衡器与 ReplayGain。
         </p>
