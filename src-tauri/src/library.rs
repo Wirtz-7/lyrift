@@ -226,19 +226,22 @@ pub fn scan_folder(
     covers: &Path,
     app: Option<&AppHandle>,
 ) -> Result<usize, String> {
-    let files: Vec<PathBuf> = WalkDir::new(folder)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .map(|e| e.into_path())
-        .filter(|p| p.is_file() && is_audio(p))
-        .collect();
+    let mut files = Vec::new();
+    for entry in WalkDir::new(folder).follow_links(false) {
+        let path = entry
+            .map_err(|e| format!("无法扫描 {}: {e}", folder.display()))?
+            .into_path();
+        if path.is_file() && is_audio(&path) {
+            files.push(path);
+        }
+    }
     let total = files.len();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
 
     // existing rows for mtime skip
     let mut known: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     {
-        let mut stmt = conn
+        let mut stmt = tx
             .prepare("SELECT path, mtime FROM tracks WHERE folder_id = ?1")
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -246,13 +249,14 @@ pub fn scan_folder(
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
             })
             .map_err(|e| e.to_string())?;
-        for (p, m) in rows.flatten() {
-            known.insert(p, m);
+        for row in rows {
+            let (path, mtime) = row.map_err(|e| e.to_string())?;
+            known.insert(path, mtime);
         }
     }
 
     let mut scanned: Vec<String> = Vec::with_capacity(total);
-    let mut up = conn
+    let mut up = tx
         .prepare(
             "INSERT INTO tracks(path, title, artist, album, duration, track_number, year, cover, mtime, folder_id)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
@@ -275,8 +279,16 @@ pub fn scan_folder(
         match parse_one(file, mtime, folder_id, covers) {
             Ok(row) => {
                 up.execute(params![
-                    row.path, row.title, row.artist, row.album, row.duration,
-                    row.track_number, row.year, row.cover, row.mtime, row.folder_id
+                    row.path,
+                    row.title,
+                    row.artist,
+                    row.album,
+                    row.duration,
+                    row.track_number,
+                    row.year,
+                    row.cover,
+                    row.mtime,
+                    row.folder_id
                 ])
                 .map_err(|e| e.to_string())?;
             }
@@ -307,11 +319,12 @@ pub fn scan_folder(
 
     // safe delete: only after a successful scan, remove rows that vanished
     let json = serde_json::to_string(&scanned).map_err(|e| e.to_string())?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM tracks WHERE folder_id = ?1 AND path NOT IN (SELECT value FROM json_each(?2))",
         params![folder_id, json],
     )
     .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
 
     emit_progress(app, total, total);
     Ok(total)
@@ -436,6 +449,38 @@ mod tests {
         assert!(rows3[0].1.ends_with("one.wav"));
 
         std::fs::remove_dir_all(&dir).unwrap();
+        assert!(scan_folder(&conn, 1, &dir, &covers, None).is_err());
+        assert_eq!(list_tracks_raw(&conn).len(), 1);
+    }
+
+    #[test]
+    fn queue_restore_keeps_current_track_when_an_earlier_item_is_missing() {
+        let db = Arc::new(Mutex::new(
+            crate::database::open(Path::new(":memory:")).unwrap(),
+        ));
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO folders(id, path, added_at) VALUES (1, 'music', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tracks(id, path, title, mtime, folder_id) VALUES (1, 'a', 'a', 0, 1), (2, 'b', 'b', 0, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        save_queue_state(&db, &[(1, "a".into()), (2, "b".into())], 1, &[], 12.0);
+        db.lock()
+            .unwrap()
+            .execute("DELETE FROM tracks WHERE id = 1", [])
+            .unwrap();
+
+        let restored = load_queue_state(&db).unwrap();
+        assert_eq!(restored.queue.len(), 1);
+        assert_eq!(restored.queue[0].id, 2);
+        assert_eq!(restored.index, 0);
     }
 
     fn list_tracks_raw(conn: &Connection) -> Vec<(i64, String)> {
@@ -793,6 +838,7 @@ pub fn load_queue_state(db: &Arc<Mutex<Connection>>) -> Option<RestoreDto> {
         .ok()?;
     let qv: Vec<(i64, String)> = serde_json::from_str(&q).ok()?;
     let hv: Vec<(i64, String)> = serde_json::from_str(&h).ok()?;
+    let current_id = qv.get(index.max(0) as usize).map(|item| item.0);
     let resolve = |v: Vec<(i64, String)>| -> Vec<TrackDto> {
         let mut out = vec![];
         for (_, path) in v {
@@ -807,13 +853,23 @@ pub fn load_queue_state(db: &Arc<Mutex<Connection>>) -> Option<RestoreDto> {
         }
         out
     };
+    let queue = resolve(qv);
+    let index = current_id
+        .and_then(|id| queue.iter().position(|track| track.id == id))
+        .unwrap_or(0) as i64;
+    let history = resolve(hv);
+    let volume = conn
+        .query_row("SELECT value FROM settings WHERE key = 'volume'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.8);
     Some(RestoreDto {
-        queue: resolve(qv),
+        queue,
         index,
-        history: resolve(hv),
+        history,
         position,
-        volume: get_setting(db, "volume")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.8),
+        volume,
     })
 }

@@ -412,7 +412,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api
       .restore()
       .then((r) => {
-        setPb((p) => ({ ...p, volume: r.volume || p.volume }));
+        setPb((p) => ({ ...p, volume: r.volume }));
         if (!r.queue.length) return;
         setQueue(r.queue);
         setHistory(r.history);

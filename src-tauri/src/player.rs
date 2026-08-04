@@ -69,7 +69,7 @@ struct QueueState {
     shuffle: bool,
     repeat: RepeatMode,
     preloaded: bool,
-    pending: Option<usize>,
+    pending: Option<(usize, f64)>,
     history: Vec<(i64, String)>,
 }
 
@@ -230,11 +230,30 @@ impl PlayerService {
             return;
         }
         let Some(item) = q.items.get(n) else { return };
-        if let Ok((src, _)) = self.build_source(&item.path) {
+        if let Ok((src, duration)) = self.build_source(&item.path) {
             self.player.append(src);
             q.preloaded = true;
-            q.pending = Some(n);
+            q.pending = Some((n, duration));
         }
+    }
+
+    fn promote_preloaded(&self) -> Option<TrackChanged> {
+        let (index, id, duration) = {
+            let mut q = self.queue.lock().unwrap();
+            let (index, duration) = q.pending?;
+            let item = q.items.get(index)?;
+            let (id, path) = (item.id, item.path.clone());
+            q.index = index;
+            q.preloaded = false;
+            q.pending = None;
+            q.history.insert(0, (id, path.clone()));
+            q.history.truncate(100);
+            (index, id, duration)
+        };
+        *self.duration.lock().unwrap() = duration;
+        *self.pending_seek.lock().unwrap() = None;
+        self.persist();
+        Some(TrackChanged { index, id })
     }
 
     fn load_at(&self, index: usize, emit: &Option<&AppHandle>) -> Result<f64, String> {
@@ -393,7 +412,11 @@ impl PlayerService {
         let history = q.history.clone();
         let index = q.index;
         drop(q);
-        let position = self.player.get_pos().as_secs_f64();
+        let position = self
+            .pending_seek
+            .lock()
+            .unwrap()
+            .unwrap_or_else(|| self.player.get_pos().as_secs_f64());
         crate::library::save_queue_state(&self.db, &queue, index, &history, position);
     }
 
@@ -446,11 +469,10 @@ impl PlayerService {
             self.player.append(src);
             self.player.pause();
             *self.duration.lock().unwrap() = duration;
-            let _ = self
-                .player
-                .try_seek(std::time::Duration::from_secs_f64(dto.position));
+            *self.pending_seek.lock().unwrap() = Some(dto.position.max(0.0));
             let mut q = self.queue.lock().unwrap();
             q.index = index;
+            self.preload(&mut q);
         }
         Some(dto)
     }
@@ -458,7 +480,10 @@ impl PlayerService {
     pub fn snapshot(&self) -> PlaybackEvent {
         let (track_id, duration) = {
             let q = self.queue.lock().unwrap();
-            (q.items.get(q.index).map(|i| i.id), *self.duration.lock().unwrap())
+            (
+                q.items.get(q.index).map(|i| i.id),
+                *self.duration.lock().unwrap(),
+            )
         };
         let position = self
             .pending_seek
@@ -487,17 +512,11 @@ impl PlayerService {
             q.preloaded && self.player.len() == 1
         };
         if promote {
-            let (n, id) = {
+            if let Some(change) = self.promote_preloaded() {
+                let _ = app.emit("track-changed", change);
                 let mut q = self.queue.lock().unwrap();
-                let Some(n) = q.pending else { return };
-                q.index = n;
-                q.preloaded = false;
-                q.pending = None;
-                (n, q.items[n].id)
-            };
-            let _ = app.emit("track-changed", TrackChanged { index: n, id });
-            let mut q = self.queue.lock().unwrap();
-            self.preload(&mut q);
+                self.preload(&mut q);
+            }
             return;
         }
         if self.player.empty() {
@@ -564,28 +583,65 @@ mod tests {
     fn plays_and_seeks_through_default_device() {
         let dir = std::env::temp_dir().join(format!("lyrift-play-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.wav");
         let wav = dir.join("tone.wav");
+        std::fs::write(&first, wav_bytes(1)).unwrap();
         std::fs::write(&wav, wav_bytes(3)).unwrap();
 
         let db = Arc::new(Mutex::new(
             crate::database::open(std::path::Path::new(":memory:")).unwrap(),
         ));
-        let svc = PlayerService::new(db).expect("open default audio device");
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO folders(id, path, added_at) VALUES (1, ?1, 0)",
+                [dir.to_string_lossy()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tracks(id, path, title, mtime, folder_id) VALUES (1, ?1, 'first', 0, 1)",
+                [first.to_string_lossy()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tracks(id, path, title, mtime, folder_id) VALUES (2, ?1, 'tone', 0, 1)",
+                [wav.to_string_lossy()],
+            )
+            .unwrap();
+        }
+        let svc = PlayerService::new(db.clone()).expect("open default audio device");
         let ev = svc
             .play_queue(
-                vec![QueueItemDto {
-                    id: 1,
-                    path: wav.to_string_lossy().into_owned(),
-                }],
+                vec![
+                    QueueItemDto {
+                        id: 1,
+                        path: first.to_string_lossy().into_owned(),
+                    },
+                    QueueItemDto {
+                        id: 2,
+                        path: wav.to_string_lossy().into_owned(),
+                    },
+                ],
                 0,
             )
-            .expect("load wav");
+            .expect("load queue");
         assert!(ev.playing);
 
-        std::thread::sleep(Duration::from_millis(700));
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while svc.player.len() != 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(svc.player.len(), 1, "preloaded track should take over");
+        let change = svc.promote_preloaded().expect("promote preloaded track");
+        assert_eq!((change.index, change.id), (1, 2));
+        assert!((*svc.duration.lock().unwrap() - 3.0).abs() < 0.01);
+        assert_eq!(svc.queue.lock().unwrap().history[0].0, 2);
+
+        std::thread::sleep(Duration::from_millis(300));
         let ev = svc.snapshot();
+        assert_eq!(ev.track_id, Some(2));
         assert!(
-            ev.position > 0.2,
+            ev.position > 0.1,
             "position should advance, got {}",
             ev.position
         );
@@ -600,6 +656,22 @@ mod tests {
         assert!(ev.playing);
 
         svc.set_volume(0.3);
+        assert!(!svc.toggle().playing);
+        svc.persist();
+        drop(svc);
+
+        let restored = PlayerService::new(db).expect("reopen default audio device");
+        let state = restored.restore().expect("restore persisted queue");
+        assert_eq!(state.queue.len(), 2);
+        assert!((state.volume - 0.3).abs() < 1e-6);
+        let ev = restored.snapshot();
+        assert!(!ev.playing);
+        assert!((ev.position - state.position).abs() < 1e-6);
+        restored.persist();
+        let persisted = crate::library::load_queue_state(&restored.db).unwrap();
+        assert!((persisted.position - state.position).abs() < 1e-6);
+        assert!(restored.toggle().playing);
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
