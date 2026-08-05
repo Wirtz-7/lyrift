@@ -21,6 +21,9 @@ await page.click('button[title="沉浸模式"]');
 const immersive = page.locator(".fixed.inset-0.z-40");
 const lyrics = page.locator(".lyrics-scroll");
 await lyrics.waitFor();
+assert.equal(await page.getByTitle("全屏").count(), 0);
+const exitBox = await page.getByTitle("退出沉浸模式").boundingBox();
+assert(exitBox && exitBox.y < 44, `exit button is too low at ${exitBox?.y}`);
 
 for (const viewport of [
   { width: 960, height: 640 },
@@ -48,6 +51,12 @@ assert.equal(scrollbar.width, "none");
 assert.equal(scrollbar.webkitDisplay, "none");
 
 const immersiveProgress = immersive.getByLabel("播放进度");
+const duration = Number(await immersiveProgress.getAttribute("max"));
+const durationText = await immersiveProgress.evaluate(
+  (el) => el.parentElement?.lastElementChild?.textContent,
+);
+const expectedDuration = `${Math.floor(duration / 60)}:${String(Math.floor(duration % 60)).padStart(2, "0")}`;
+assert.equal(durationText, expectedDuration, "immersive progress uses a countdown");
 const activeLyric = () =>
   page.locator(".lyric-line").evaluateAll((lines) => lines.findIndex((line) => line.style.opacity === "1"));
 const activeBeforeDrag = await activeLyric();
@@ -68,17 +77,26 @@ const before = await lyrics.evaluate((el) => el.scrollTop);
 await lyrics.hover();
 await page.mouse.wheel(0, 360);
 await page.waitForTimeout(30);
-assert((await lyrics.evaluate((el) => el.scrollTop)) > before, "lyrics no longer scroll");
+const afterWheel = await lyrics.evaluate((el) => el.scrollTop);
+assert(afterWheel > before, "lyrics no longer scroll");
 assert(await lyrics.evaluate((el) => el.classList.contains("lyrics-scrolling")));
 assert.equal(await blurred.evaluate((el) => getComputedStyle(el).filter), "none");
+await page.mouse.move(progressBox.x + progressBox.width * 0.75, progressBox.y + progressBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(progressBox.x + progressBox.width * 0.25, progressBox.y + progressBox.height / 2, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(100);
+assert.equal(await lyrics.evaluate((el) => el.scrollTop), afterWheel, "scrolling refocused lyrics too soon");
 await page.waitForTimeout(1500);
 assert(await lyrics.evaluate((el) => el.classList.contains("lyrics-scrolling")));
 await page.waitForTimeout(550);
 assert(!(await lyrics.evaluate((el) => el.classList.contains("lyrics-scrolling"))));
+await page.waitForTimeout(3500);
+assert.notEqual(await lyrics.evaluate((el) => el.scrollTop), afterWheel, "lyrics did not refocus after idle");
 const blur = Number((await blurred.evaluate((el) => getComputedStyle(el).filter)).match(/[\d.]+/)?.[0] ?? 0);
 assert(blur <= 1.25, `inactive lyric blur is ${blur}px`);
 const autoScrollBefore = await lyrics.evaluate((el) => el.scrollTop);
-await page.locator(".lyric-line").nth(6).click();
+await page.locator(".lyric-line").nth(12).click();
 await page.waitForTimeout(500);
 assert((await lyrics.evaluate((el) => el.scrollTop)) > autoScrollBefore, "active lyric did not scroll");
 assert.deepEqual(

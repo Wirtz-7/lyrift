@@ -2,7 +2,6 @@ import {
   ChevronDown,
   Heart,
   MicOff,
-  Minimize,
   Pause,
   Play,
   Repeat,
@@ -18,7 +17,6 @@ import CoverArt from "./CoverArt";
 
 const fill = (pct: number) => ({ "--fill": `${pct}%` }) as CSSProperties;
 
-const inTauri = "__TAURI_INTERNALS__" in window;
 const reducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -28,12 +26,15 @@ export default function ImmersiveView() {
   const t = pb.track;
   const [shown, setShown] = useState(false);
   const [scrolling, setScrolling] = useState(false);
+  const [autoFocusPaused, setAutoFocusPaused] = useState(false);
   const scrollTimer = useRef<number | undefined>(undefined);
+  const focusTimer = useRef<number | undefined>(undefined);
   useEffect(() => {
     const id = requestAnimationFrame(() => setShown(true));
     return () => {
       cancelAnimationFrame(id);
       window.clearTimeout(scrollTimer.current);
+      window.clearTimeout(focusTimer.current);
     };
   }, []);
 
@@ -41,6 +42,12 @@ export default function ImmersiveView() {
     setScrolling(true);
     window.clearTimeout(scrollTimer.current);
     scrollTimer.current = window.setTimeout(() => setScrolling(false), 2000);
+  };
+
+  const pauseAutoFocus = () => {
+    setAutoFocusPaused(true);
+    window.clearTimeout(focusTimer.current);
+    focusTimer.current = window.setTimeout(() => setAutoFocusPaused(false), 5000);
   };
 
   const current =
@@ -51,6 +58,7 @@ export default function ImmersiveView() {
   const lyricsRef = useRef<HTMLDivElement | null>(null);
   const lineRefs = useRef<(HTMLButtonElement | null)[]>([]);
   useEffect(() => {
+    if (autoFocusPaused) return;
     const container = lyricsRef.current;
     const line = lineRefs.current[current];
     if (!container || !line) return;
@@ -66,15 +74,7 @@ export default function ImmersiveView() {
       ),
       behavior: reducedMotion() ? "auto" : "smooth",
     });
-  }, [current]);
-
-  const toggleFullscreen = () => {
-    if (!inTauri) return;
-    import("@tauri-apps/api/window").then((m) => {
-      const w = m.getCurrentWindow();
-      w.isFullscreen().then((f) => w.setFullscreen(!f)).catch(() => {});
-    });
-  };
+  }, [autoFocusPaused, current]);
 
   const seeking = useRef(false);
   const [seekPreview, setSeekPreview] = useState<number | null>(null);
@@ -101,7 +101,7 @@ export default function ImmersiveView() {
       <div className="absolute inset-0 bg-gradient-to-r from-black/50 via-black/20 to-black/50" />
 
       {/* top-left controls (title bar keeps window buttons top-right) */}
-      <div className="absolute left-4 top-11 z-20 flex items-center gap-1">
+      <div className="absolute left-4 top-9 z-20 flex items-center gap-1">
         <button
           onClick={() => s.setImmersive(false)}
           title="退出沉浸模式"
@@ -109,15 +109,6 @@ export default function ImmersiveView() {
         >
           <ChevronDown className="h-4.5 w-4.5" />
         </button>
-        {inTauri && (
-          <button
-            onClick={toggleFullscreen}
-            title="全屏"
-            className="rounded-full bg-white/10 p-2.5 text-white/80 backdrop-blur transition-colors hover:bg-white/20 hover:text-white"
-          >
-            <Minimize className="h-4.5 w-4.5" />
-          </button>
-        )}
       </div>
 
       <div className="relative z-10 mx-auto flex h-full w-full max-w-[1800px] gap-14 px-12 pb-10 pt-16">
@@ -180,7 +171,7 @@ export default function ImmersiveView() {
               aria-label="播放进度"
               className="h-4 flex-1"
             />
-            <span className="w-10">-{fmtTime(Math.max(0, pb.duration - position))}</span>
+            <span className="w-10">{fmtTime(pb.duration)}</span>
           </div>
 
           <div className="mt-5 flex items-center justify-center gap-7">
@@ -228,6 +219,8 @@ export default function ImmersiveView() {
             <div
               ref={lyricsRef}
               onScroll={onLyricsScroll}
+              onWheel={pauseAutoFocus}
+              onTouchMove={pauseAutoFocus}
               className={`lyrics-scroll h-full overflow-x-hidden overflow-y-auto py-[30vh] pr-6 ${
                 scrolling ? "lyrics-scrolling" : ""
               }`}
