@@ -2012,6 +2012,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "walkdir",
+ "winreg",
 ]
 
 [[package]]

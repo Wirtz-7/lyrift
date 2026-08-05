@@ -4,6 +4,7 @@ mod library;
 mod lyrics;
 mod player;
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -16,6 +17,41 @@ pub struct AppState {
     pub covers_dir: PathBuf,
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
     pub player: Arc<player::PlayerService>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricsDisplaySettings {
+    pub original_font: String,
+    pub translation_font: String,
+    pub original_size: f64,
+    pub translation_size: f64,
+    pub line_gap: f64,
+    pub blur_enabled: bool,
+}
+
+impl Default for LyricsDisplaySettings {
+    fn default() -> Self {
+        Self {
+            original_font: String::new(),
+            translation_font: String::new(),
+            original_size: 26.0,
+            translation_size: 13.5,
+            line_gap: 32.0,
+            blur_enabled: true,
+        }
+    }
+}
+
+impl LyricsDisplaySettings {
+    fn normalized(mut self) -> Self {
+        self.original_font = self.original_font.trim().to_string();
+        self.translation_font = self.translation_font.trim().to_string();
+        self.original_size = self.original_size.clamp(16.0, 56.0);
+        self.translation_size = self.translation_size.clamp(10.0, 32.0);
+        self.line_gap = self.line_gap.clamp(8.0, 64.0);
+        self
+    }
 }
 
 #[tauri::command]
@@ -105,6 +141,56 @@ fn restore(state: tauri::State<AppState>) -> library::RestoreDto {
 #[tauri::command]
 fn lyrics_for(path: String) -> lyrics::LyricDto {
     lyrics::load_lyrics(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+fn get_lyrics_display_settings(state: tauri::State<AppState>) -> LyricsDisplaySettings {
+    library::get_setting(&state.db, "lyrics_display")
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .map(LyricsDisplaySettings::normalized)
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn set_lyrics_display_settings(settings: LyricsDisplaySettings, state: tauri::State<AppState>) {
+    if let Ok(value) = serde_json::to_string(&settings.normalized()) {
+        library::set_setting(&state.db, "lyrics_display", &value);
+    }
+}
+
+#[tauri::command]
+fn system_fonts() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        use std::collections::BTreeSet;
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        use winreg::RegKey;
+
+        let path = "Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts";
+        let mut fonts = BTreeSet::new();
+        for root in [
+            RegKey::predef(HKEY_CURRENT_USER),
+            RegKey::predef(HKEY_LOCAL_MACHINE),
+        ] {
+            let Ok(key) = root.open_subkey(path) else {
+                continue;
+            };
+            for (name, _) in key.enum_values().flatten() {
+                let family = name.split_once(" (").map(|(n, _)| n).unwrap_or(&name);
+                for part in family.split(" & ") {
+                    let name = part.trim();
+                    if !name.is_empty() {
+                        fonts.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        fonts.into_iter().collect()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
 }
 
 #[tauri::command]
@@ -279,6 +365,9 @@ pub fn run() {
             playlist_remove,
             restore,
             lyrics_for,
+            get_lyrics_display_settings,
+            set_lyrics_display_settings,
+            system_fonts,
             play_queue,
             queue_next,
             queue_prev,

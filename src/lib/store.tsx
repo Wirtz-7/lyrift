@@ -10,9 +10,14 @@ import {
 } from "react";
 import { api, isTauri, type EqSettings } from "./backend";
 import { MOCK_TRACKS, mockLyrics } from "./mock";
+import {
+  DEFAULT_LYRICS_DISPLAY_SETTINGS,
+  normalizeLyricsDisplaySettings,
+} from "./types";
 import type {
   LibraryState,
   LyricState,
+  LyricsDisplaySettings,
   PlaybackSnapshot,
   Track,
   ViewId,
@@ -43,6 +48,8 @@ interface Store {
   pb: PlaybackSnapshot;
   playerError: string | null;
   lyrics: LyricState;
+  lyricsDisplay: LyricsDisplaySettings;
+  updateLyricsDisplay: (patch: Partial<LyricsDisplaySettings>) => void;
   queue: Track[];
   queueIndex: number;
   history: Track[];
@@ -74,6 +81,7 @@ interface Store {
 let mockPlaylists: { id: number; name: string }[] = [];
 let mockPlaylistTracks = new Map<number, Track[]>();
 let mockNextPid = 1;
+const LYRICS_DISPLAY_STORAGE_KEY = "lyrift.lyrics-display";
 
 function idxOf(list: Track[], id: string): number {
   return list.findIndex((x) => x.id === id);
@@ -122,6 +130,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [playlistsState, setPlaylistsState] = useState<{ id: number; name: string }[]>([]);
   const [eq, setEq] = useState<EqSettings>({ enabled: false, preamp: 0, gains: Array(10).fill(0) });
   const [rg, setRgState] = useState("off");
+  const [lyricsDisplay, setLyricsDisplay] = useState(DEFAULT_LYRICS_DISPLAY_SETTINGS);
+
+  useEffect(() => {
+    if (isTauri) {
+      api
+        .lyricsDisplaySettings()
+        .then((settings) => setLyricsDisplay(normalizeLyricsDisplaySettings(settings)))
+        .catch(() => {});
+      return;
+    }
+    try {
+      const saved = window.localStorage.getItem(LYRICS_DISPLAY_STORAGE_KEY);
+      if (saved) setLyricsDisplay(normalizeLyricsDisplaySettings(JSON.parse(saved)));
+    } catch {
+      // Ignore unavailable or malformed browser storage in dev mode.
+    }
+  }, []);
+
+  const updateLyricsDisplay = useCallback((patch: Partial<LyricsDisplaySettings>) => {
+    setLyricsDisplay((current) => {
+      const next = normalizeLyricsDisplaySettings({ ...current, ...patch });
+      if (isTauri) {
+        api.setLyricsDisplaySettings(next).catch(() => {});
+      } else {
+        try {
+          window.localStorage.setItem(LYRICS_DISPLAY_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // Ignore unavailable browser storage in dev mode.
+        }
+      }
+      return next;
+    });
+  }, []);
 
   const loadTimer = useRef<number | undefined>(undefined);
   const lyricRequest = useRef(0);
@@ -530,6 +571,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addFolder,
       pb,
       playerError,
+      lyricsDisplay,
+      updateLyricsDisplay,
       eq,
       rg,
       updateEq,
@@ -556,7 +599,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toggleFavorite,
     }),
     [
-      view, immersive, queueOpen, eqOpen, library, scanProgress, reloadLibrary, addFolder, pb, playerError, eq, rg, updateEq, setRg, playlistsState, createPlaylist, deletePlaylist, addToPlaylist, getPlaylistTracks, lyrics,
+      view, immersive, queueOpen, eqOpen, library, scanProgress, reloadLibrary, addFolder, pb, playerError, lyricsDisplay, updateLyricsDisplay, eq, rg, updateEq, setRg, playlistsState, createPlaylist, deletePlaylist, addToPlaylist, getPlaylistTracks, lyrics,
       queue, queueIndex, history, favorites, playTrack, playQueueAt, togglePlay, next, prev,
       seek, setVolume, toggleShuffle, cycleRepeat, toggleFavorite, updateEq, setRg, createPlaylist, deletePlaylist, addToPlaylist, getPlaylistTracks,
     ],

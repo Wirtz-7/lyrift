@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Track } from "./types";
+import type { LyricsDisplaySettings, Track } from "./types";
 
 export const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -135,6 +135,15 @@ export const api = {
   },
   lyricsFor(path: string): Promise<import("./types").LyricState> {
     return invoke("lyrics_for", { path });
+  },
+  lyricsDisplaySettings(): Promise<LyricsDisplaySettings> {
+    return invoke("get_lyrics_display_settings");
+  },
+  setLyricsDisplaySettings(settings: LyricsDisplaySettings) {
+    return invoke("set_lyrics_display_settings", { settings });
+  },
+  systemFonts(): Promise<string[]> {
+    return invoke("system_fonts");
   },
   onTrackChanged(cb: (e: { index: number; id: number }) => void) {
     return listen<{ index: number; id: number }>("track-changed", (e) => cb(e.payload));

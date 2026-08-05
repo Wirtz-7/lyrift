@@ -94,7 +94,7 @@ assert(!(await lyrics.evaluate((el) => el.classList.contains("lyrics-scrolling")
 await page.waitForTimeout(3500);
 assert.notEqual(await lyrics.evaluate((el) => el.scrollTop), afterWheel, "lyrics did not refocus after idle");
 const blur = Number((await blurred.evaluate((el) => getComputedStyle(el).filter)).match(/[\d.]+/)?.[0] ?? 0);
-assert(blur <= 1.25, `inactive lyric blur is ${blur}px`);
+assert(blur > 0, "inactive lyric blur did not return after auto-focus");
 const autoScrollBefore = await lyrics.evaluate((el) => el.scrollTop);
 await page.locator(".lyric-line").nth(12).click();
 await page.waitForTimeout(500);
@@ -109,6 +109,37 @@ assert.deepEqual(
   "active lyric scrolled the outer viewport",
 );
 assert.deepEqual(await immersive.boundingBox(), { x: 0, y: 0, width: 1280, height: 800 });
+assert.deepEqual(errors, []);
+
+await page.getByTitle("退出沉浸模式").click();
+await page.getByTitle("设置").click();
+await page.getByText("歌词显示").waitFor();
+await page.getByLabel("原文字体").selectOption("Arial");
+await page.getByLabel("翻译字体").selectOption("Microsoft YaHei");
+await page.getByLabel("原文字号").press("End");
+await page.getByLabel("翻译字号").press("End");
+await page.getByLabel("歌词行距").press("End");
+await page.getByLabel("歌词文字模糊").uncheck();
+await page.getByTitle("沉浸模式").click();
+await page.locator(".lyrics-scroll").waitFor();
+const firstLyric = page.locator(".lyric-line").first();
+const translation = firstLyric.locator("span").nth(1);
+assert((await firstLyric.evaluate((el) => getComputedStyle(el).fontFamily)).includes("Arial"));
+assert.equal(await firstLyric.evaluate((el) => getComputedStyle(el).fontSize), "56px");
+assert((await translation.evaluate((el) => getComputedStyle(el).fontFamily)).includes("Microsoft YaHei"));
+assert.equal(await translation.evaluate((el) => getComputedStyle(el).fontSize), "32px");
+assert.equal(await firstLyric.evaluate((el) => getComputedStyle(el).marginBottom), "64px");
+assert.equal(await firstLyric.evaluate((el) => getComputedStyle(el).filter), "none");
+
+await page.reload();
+await page.getByText("袖口のキルト").waitFor();
+await page.getByText("袖口のキルト").dblclick();
+await page.click('button[title="沉浸模式"]');
+await page.locator(".lyrics-scroll").waitFor();
+const reloadedLyric = page.locator(".lyric-line").first();
+assert.equal(await reloadedLyric.evaluate((el) => getComputedStyle(el).fontSize), "56px");
+assert.equal(await reloadedLyric.evaluate((el) => getComputedStyle(el).marginBottom), "64px");
+assert.equal(await reloadedLyric.evaluate((el) => getComputedStyle(el).filter), "none");
 assert.deepEqual(errors, []);
 
 await mkdir("/tmp/shots", { recursive: true });

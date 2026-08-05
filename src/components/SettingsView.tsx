@@ -3,14 +3,39 @@ import { useEffect, useState } from "react";
 import { api, isTauri, type FolderDto } from "../lib/backend";
 import { useStore } from "../lib/store";
 
+const FALLBACK_FONTS = ["Arial", "Segoe UI", "Microsoft YaHei", "Inter", "Noto Sans SC"];
+const SELECT_CLASS =
+  "h-8 min-w-0 flex-1 rounded-md border border-white/10 bg-white/5 px-2 text-[12px] text-white focus:border-accent/60 focus:outline-none";
+const RANGE_CLASS = "h-4 min-w-0 flex-1";
+
 export default function SettingsView() {
   const s = useStore();
   const [folders, setFolders] = useState<FolderDto[]>([]);
+  const [fonts, setFonts] = useState<string[]>(isTauri ? [] : FALLBACK_FONTS);
 
   const refresh = () => {
     if (isTauri) api.folders().then(setFolders).catch(() => {});
   };
   useEffect(refresh, [s.library.status]);
+  useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    api
+      .systemFonts()
+      .then((names) => {
+        if (active) setFonts(names);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const fontOptions = Array.from(
+    new Set([fonts, [s.lyricsDisplay.originalFont, s.lyricsDisplay.translationFont]].flat()),
+  )
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 
   return (
     <div className="mx-auto max-w-2xl px-7 pt-6 pb-10">
@@ -72,6 +97,107 @@ export default function SettingsView() {
         <p className="mt-1 text-[12.5px] leading-6 text-white/40">
           均衡器与 ReplayGain 在播放栏的“均衡器”面板中调整，设置会自动保存并在下次启动时恢复。
         </p>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-[14px] font-medium text-white/80">歌词显示</h2>
+        <p className="mt-1 text-[12.5px] leading-6 text-white/40">
+          字体来自 Windows 已安装的字体，修改会立即应用并自动保存。
+        </p>
+        <div className="mt-3 space-y-3">
+          <label className="flex items-center gap-3 text-[12.5px] text-white/70">
+            <span className="w-24 shrink-0">原文字体</span>
+            <select
+              aria-label="原文字体"
+              value={s.lyricsDisplay.originalFont}
+              onChange={(e) => s.updateLyricsDisplay({ originalFont: e.target.value })}
+              className={SELECT_CLASS}
+            >
+              <option value="">应用默认</option>
+              {fontOptions.map((font) => (
+                <option key={font} value={font}>
+                  {font}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-3 text-[12.5px] text-white/70">
+            <span className="w-24 shrink-0">翻译字体</span>
+            <select
+              aria-label="翻译字体"
+              value={s.lyricsDisplay.translationFont}
+              onChange={(e) => s.updateLyricsDisplay({ translationFont: e.target.value })}
+              className={SELECT_CLASS}
+            >
+              <option value="">应用默认</option>
+              {fontOptions.map((font) => (
+                <option key={font} value={font}>
+                  {font}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-3 text-[12.5px] text-white/70">
+            <span className="w-24 shrink-0">原文字号</span>
+            <input
+              aria-label="原文字号"
+              type="range"
+              min={16}
+              max={56}
+              step={1}
+              value={s.lyricsDisplay.originalSize}
+              onChange={(e) => s.updateLyricsDisplay({ originalSize: e.currentTarget.valueAsNumber })}
+              className={RANGE_CLASS}
+            />
+            <output className="w-12 text-right tabular-nums text-white/45">
+              {s.lyricsDisplay.originalSize}px
+            </output>
+          </label>
+          <label className="flex items-center gap-3 text-[12.5px] text-white/70">
+            <span className="w-24 shrink-0">翻译字号</span>
+            <input
+              aria-label="翻译字号"
+              type="range"
+              min={10}
+              max={32}
+              step={0.5}
+              value={s.lyricsDisplay.translationSize}
+              onChange={(e) =>
+                s.updateLyricsDisplay({ translationSize: e.currentTarget.valueAsNumber })
+              }
+              className={RANGE_CLASS}
+            />
+            <output className="w-12 text-right tabular-nums text-white/45">
+              {s.lyricsDisplay.translationSize}px
+            </output>
+          </label>
+          <label className="flex items-center gap-3 text-[12.5px] text-white/70">
+            <span className="w-24 shrink-0">歌词行距</span>
+            <input
+              aria-label="歌词行距"
+              type="range"
+              min={8}
+              max={64}
+              step={1}
+              value={s.lyricsDisplay.lineGap}
+              onChange={(e) => s.updateLyricsDisplay({ lineGap: e.currentTarget.valueAsNumber })}
+              className={RANGE_CLASS}
+            />
+            <output className="w-12 text-right tabular-nums text-white/45">
+              {s.lyricsDisplay.lineGap}px
+            </output>
+          </label>
+          <label className="flex items-center justify-between gap-3 text-[12.5px] text-white/70">
+            <span>歌词文字模糊</span>
+            <input
+              aria-label="歌词文字模糊"
+              type="checkbox"
+              checked={s.lyricsDisplay.blurEnabled}
+              onChange={(e) => s.updateLyricsDisplay({ blurEnabled: e.target.checked })}
+              className="h-4 w-4 accent-accent"
+            />
+          </label>
+        </div>
       </section>
 
       <section className="mt-8">

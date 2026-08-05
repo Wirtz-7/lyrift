@@ -30,3 +30,5 @@ rodio = { version = "0.22.2", features = ["symphonia"] }
 biquad = "0.6.0"
 lrc = "0.2.0"
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

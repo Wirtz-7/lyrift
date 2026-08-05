@@ -16,13 +16,14 @@ import { useStore } from "../lib/store";
 import CoverArt from "./CoverArt";
 
 const fill = (pct: number) => ({ "--fill": `${pct}%` }) as CSSProperties;
+const cssFont = (name: string) => (name ? `"${name.replace(/"/g, "")}", sans-serif` : undefined);
 
 const reducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 export default function ImmersiveView() {
   const s = useStore();
-  const { pb, lyrics } = s;
+  const { pb, lyrics, lyricsDisplay } = s;
   const t = pb.track;
   const [shown, setShown] = useState(false);
   const [scrolling, setScrolling] = useState(false);
@@ -38,13 +39,10 @@ export default function ImmersiveView() {
     };
   }, []);
 
-  const onLyricsScroll = () => {
+  const onUserScroll = () => {
     setScrolling(true);
     window.clearTimeout(scrollTimer.current);
     scrollTimer.current = window.setTimeout(() => setScrolling(false), 2000);
-  };
-
-  const pauseAutoFocus = () => {
     setAutoFocusPaused(true);
     window.clearTimeout(focusTimer.current);
     focusTimer.current = window.setTimeout(() => setAutoFocusPaused(false), 5000);
@@ -218,9 +216,8 @@ export default function ImmersiveView() {
           {lyrics.kind === "synced" && (
             <div
               ref={lyricsRef}
-              onScroll={onLyricsScroll}
-              onWheel={pauseAutoFocus}
-              onTouchMove={pauseAutoFocus}
+              onWheel={onUserScroll}
+              onTouchMove={onUserScroll}
               className={`lyrics-scroll h-full overflow-x-hidden overflow-y-auto py-[30vh] pr-6 ${
                 scrolling ? "lyrics-scrolling" : ""
               }`}
@@ -234,7 +231,14 @@ export default function ImmersiveView() {
                 const d = i - current;
                 const ad = Math.abs(d);
                 const opacity = ad === 0 ? 1 : ad === 1 ? 0.68 : ad === 2 ? 0.48 : 0.32;
-                const blur = ad === 0 ? 0 : ad === 1 ? 0.35 : ad === 2 ? 0.75 : 1.25;
+                const blur =
+                  lyricsDisplay.blurEnabled && ad > 0
+                    ? ad === 1
+                      ? 0.35
+                      : ad === 2
+                        ? 0.75
+                        : 1.25
+                    : 0;
                 return (
                   <button
                     key={i}
@@ -242,18 +246,30 @@ export default function ImmersiveView() {
                       lineRefs.current[i] = el;
                     }}
                     onClick={() => s.seek(l.time)}
-                    className="lyric-line mb-8 block w-full max-w-full text-left"
-                    style={{ opacity, filter: blur ? `blur(${blur}px)` : undefined }}
+                    className="lyric-line block w-full max-w-full text-left"
+                    style={{
+                      opacity,
+                      filter: blur ? `blur(${blur}px)` : undefined,
+                      fontFamily: cssFont(lyricsDisplay.originalFont),
+                      fontSize: `${lyricsDisplay.originalSize}px`,
+                      marginBottom: `${lyricsDisplay.lineGap}px`,
+                    }}
                   >
                     <span
-                      className={`block break-words text-[26px] font-semibold leading-snug ${
+                      className={`block break-words font-semibold leading-snug ${
                         ad === 0 ? "text-white" : "text-white/80"
                       }`}
                     >
                       {l.text}
                     </span>
                     {l.translation && (
-                      <span className="mt-2 block whitespace-pre-line break-words text-[13.5px] text-white/60">
+                      <span
+                        className="mt-2 block whitespace-pre-line break-words text-white/60"
+                        style={{
+                          fontFamily: cssFont(lyricsDisplay.translationFont),
+                          fontSize: `${lyricsDisplay.translationSize}px`,
+                        }}
+                      >
                         {l.translation}
                       </span>
                     )}
@@ -264,7 +280,13 @@ export default function ImmersiveView() {
           )}
           {lyrics.kind === "plain" && (
             <div className="lyrics-scroll h-full overflow-y-auto py-16 pr-6">
-              <div className="whitespace-pre-wrap text-[17px] leading-8 text-white/80">
+              <div
+                className="whitespace-pre-wrap leading-8 text-white/80"
+                style={{
+                  fontFamily: cssFont(lyricsDisplay.originalFont),
+                  fontSize: `${lyricsDisplay.originalSize}px`,
+                }}
+              >
                 {lyrics.text}
               </div>
             </div>
