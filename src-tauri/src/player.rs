@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use lofty::prelude::{ItemKey, TaggedFileExt};
 use lofty::probe::Probe;
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::decoder::DecoderBuilder;
 use rodio::source::{LimitSettings, Source};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
@@ -87,10 +88,46 @@ impl Default for QueueState {
     }
 }
 
-pub struct PlayerService {
-    // keeps the audio device alive
-    _device: MixerDeviceSink,
+struct AudioOutput {
+    device: MixerDeviceSink,
     player: Player,
+    device_key: String,
+}
+
+fn output_device_key(device: &rodio::cpal::Device) -> String {
+    device
+        .id()
+        .map(|id| id.to_string())
+        .or_else(|_| device.description().map(|d| d.name().to_owned()))
+        .unwrap_or_default()
+}
+
+fn open_audio_output(device: rodio::cpal::Device) -> Result<AudioOutput, String> {
+    let device_key = output_device_key(&device);
+    // ponytail: fixed 4096-frame buffer; WSLg's virtual RDP sink crackles
+    // with cpal's small default buffer. Revisit only if latency matters.
+    let device = DeviceSinkBuilder::from_device(device)
+        .map_err(|e| e.to_string())?
+        .with_buffer_size(rodio::cpal::BufferSize::Fixed(4096))
+        .open_stream()
+        .map_err(|e| e.to_string())?;
+    let player = Player::connect_new(device.mixer());
+    Ok(AudioOutput {
+        device,
+        player,
+        device_key,
+    })
+}
+
+fn open_default_audio_output() -> Result<AudioOutput, String> {
+    let device = rodio::cpal::default_host()
+        .default_output_device()
+        .ok_or("未找到默认音频输出设备")?;
+    open_audio_output(device)
+}
+
+pub struct PlayerService {
+    audio: Mutex<AudioOutput>,
     queue: Mutex<QueueState>,
     eq: Arc<RwLock<EqShared>>,
     rg: Mutex<RgMode>,
@@ -140,17 +177,8 @@ fn replay_gain_lin(tag: Option<&lofty::tag::Tag>, mode: RgMode) -> f64 {
 
 impl PlayerService {
     pub fn new(db: Arc<Mutex<rusqlite::Connection>>) -> Result<Self, String> {
-        // ponytail: fixed 4096-frame buffer; WSLg's virtual RDP sink crackles
-        // with cpal's small default buffer. Revisit only if latency matters.
-        let device = DeviceSinkBuilder::from_default_device()
-            .map_err(|e| e.to_string())?
-            .with_buffer_size(rodio::cpal::BufferSize::Fixed(4096))
-            .open_stream()
-            .map_err(|e| e.to_string())?;
-        let player = Player::connect_new(device.mixer());
         Ok(Self {
-            _device: device,
-            player,
+            audio: Mutex::new(open_default_audio_output()?),
             queue: Mutex::new(QueueState::default()),
             eq: EqShared::new(),
             rg: Mutex::new(RgMode::Off),
@@ -159,6 +187,80 @@ impl PlayerService {
             ticks: Mutex::new(0),
             pending_seek: Mutex::new(None),
         })
+    }
+
+    fn with_player<T>(&self, f: impl FnOnce(&Player) -> T) -> T {
+        f(&self.audio.lock().unwrap().player)
+    }
+
+    fn refresh_output_device(&self, force: bool) -> Result<bool, String> {
+        let device = rodio::cpal::default_host()
+            .default_output_device()
+            .ok_or("未找到默认音频输出设备")?;
+        let device_key = output_device_key(&device);
+        if !force && self.audio.lock().unwrap().device_key == device_key {
+            return Ok(false);
+        }
+
+        let current = {
+            let q = self.queue.lock().unwrap();
+            q.items
+                .get(q.index)
+                .map(|item| (item.id, item.path.clone()))
+        };
+        let source = current
+            .as_ref()
+            .map(|(_, path)| self.build_source(path))
+            .transpose()?;
+        let replacement = open_audio_output(device)?;
+
+        let current_now = {
+            let q = self.queue.lock().unwrap();
+            q.items
+                .get(q.index)
+                .map(|item| (item.id, item.path.clone()))
+        };
+        if current_now != current {
+            return Ok(false);
+        }
+
+        let pending = *self.pending_seek.lock().unwrap();
+        let mut audio = self.audio.lock().unwrap();
+        if !force && audio.device_key == replacement.device_key {
+            return Ok(false);
+        }
+        let position = pending.unwrap_or_else(|| audio.player.get_pos().as_secs_f64());
+        let paused = audio.player.is_paused();
+        let volume = audio.player.volume();
+
+        replacement
+            .player
+            .set_volume(if paused { volume } else { 0.0 });
+        if paused {
+            replacement.player.pause();
+        }
+        if let Some((source, duration)) = source {
+            replacement.player.append(source);
+            if !paused {
+                replacement
+                    .player
+                    .try_seek(Duration::from_secs_f64(position))
+                    .map_err(|e| format!("切换输出设备时 seek 失败: {e}"))?;
+                replacement.player.set_volume(volume);
+            }
+            *self.duration.lock().unwrap() = duration;
+        }
+
+        audio.device.log_on_drop(false);
+        *audio = replacement;
+        drop(audio);
+        *self.pending_seek.lock().unwrap() = paused.then_some(position);
+
+        let mut q = self.queue.lock().unwrap();
+        q.preloaded = false;
+        q.pending = None;
+        self.preload(&mut q);
+        Ok(true)
     }
 
     fn build_source(
@@ -235,7 +337,7 @@ impl PlayerService {
         }
         let Some(item) = q.items.get(n) else { return };
         if let Ok((src, duration)) = self.build_source(&item.path) {
-            self.player.append(src);
+            self.with_player(|player| player.append(src));
             q.preloaded = true;
             q.pending = Some((n, duration));
         }
@@ -267,9 +369,11 @@ impl PlayerService {
             (item.path.clone(), item.id)
         };
         let (src, duration) = self.build_source(&path)?;
-        self.player.clear();
-        self.player.append(src);
-        self.player.play();
+        self.with_player(|player| {
+            player.clear();
+            player.append(src);
+            player.play();
+        });
         *self.duration.lock().unwrap() = duration;
         *self.pending_seek.lock().unwrap() = None;
         {
@@ -313,14 +417,21 @@ impl PlayerService {
         if let Some(n) = n {
             let _ = self.load_at(n, &Some(app));
         } else {
-            self.player.pause();
+            self.with_player(Player::pause);
         }
         self.snapshot()
     }
 
     pub fn prev(&self, app: &AppHandle) -> PlaybackEvent {
-        if self.player.get_pos() > Duration::from_secs(3) {
-            let _ = self.player.try_seek(Duration::ZERO);
+        let restarted = self.with_player(|player| {
+            if player.get_pos() > Duration::from_secs(3) {
+                let _ = player.try_seek(Duration::ZERO);
+                true
+            } else {
+                false
+            }
+        });
+        if restarted {
             return self.snapshot();
         }
         let (p, len) = {
@@ -344,34 +455,36 @@ impl PlayerService {
     }
 
     pub fn toggle(&self) -> PlaybackEvent {
-        if self.player.is_paused() {
-            self.player.play();
-            if let Some(pos) = self.pending_seek.lock().unwrap().take() {
-                let _ = self.player.try_seek(Duration::from_secs_f64(pos));
-            }
+        if self.with_player(Player::is_paused) {
+            let pending = self.pending_seek.lock().unwrap().take();
+            self.with_player(|player| {
+                player.play();
+                if let Some(pos) = pending {
+                    let _ = player.try_seek(Duration::from_secs_f64(pos));
+                }
+            });
         } else {
-            self.player.pause();
+            self.with_player(Player::pause);
         }
         self.snapshot()
     }
 
     pub fn seek(&self, pos: f64) -> Result<PlaybackEvent, String> {
         let pos = pos.max(0.0);
-        if self.player.is_paused() {
+        if self.with_player(Player::is_paused) {
             // ponytail: rodio 0.22 never polls the source while paused, so a
             // seek here would block forever; defer until resume.
             *self.pending_seek.lock().unwrap() = Some(pos);
             return Ok(self.snapshot());
         }
-        self.player
-            .try_seek(Duration::from_secs_f64(pos))
+        self.with_player(|player| player.try_seek(Duration::from_secs_f64(pos)))
             .map_err(|e| format!("seek 失败: {e}"))?;
         Ok(self.snapshot())
     }
 
     pub fn set_volume(&self, v: f64) -> PlaybackEvent {
         let v = v.clamp(0.0, 1.0);
-        self.player.set_volume(v as f32);
+        self.with_player(|player| player.set_volume(v as f32));
         crate::library::set_setting(&self.db, "volume", &v.to_string());
         if v > 0.0 {
             crate::library::set_setting(&self.db, "last_volume", &v.to_string());
@@ -419,11 +532,9 @@ impl PlayerService {
         let history = q.history.clone();
         let index = q.index;
         drop(q);
-        let position = self
-            .pending_seek
-            .lock()
-            .unwrap()
-            .unwrap_or_else(|| self.player.get_pos().as_secs_f64());
+        let pending = *self.pending_seek.lock().unwrap();
+        let position =
+            pending.unwrap_or_else(|| self.with_player(|player| player.get_pos().as_secs_f64()));
         crate::library::save_queue_state(&self.db, &queue, index, &history, position);
     }
 
@@ -448,7 +559,7 @@ impl PlayerService {
         let last_volume = crate::library::get_setting(&self.db, "last_volume")
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(if volume > 0.0 { volume } else { 0.8 });
-        self.player.set_volume(volume as f32);
+        self.with_player(|player| player.set_volume(volume as f32));
 
         let dto =
             crate::library::load_queue_state(&self.db).unwrap_or(crate::library::RestoreDto {
@@ -480,9 +591,11 @@ impl PlayerService {
                 .map(|p| self.build_source(&p))
                 .unwrap_or(Err("empty".into()))
         } {
-            self.player.clear();
-            self.player.append(src);
-            self.player.pause();
+            self.with_player(|player| {
+                player.clear();
+                player.append(src);
+                player.pause();
+            });
             *self.duration.lock().unwrap() = duration;
             *self.pending_seek.lock().unwrap() = Some(dto.position.max(0.0));
             let mut q = self.queue.lock().unwrap();
@@ -500,16 +613,19 @@ impl PlayerService {
                 *self.duration.lock().unwrap(),
             )
         };
-        let position = self
-            .pending_seek
-            .lock()
-            .unwrap()
-            .unwrap_or_else(|| self.player.get_pos().as_secs_f64());
+        let pending = *self.pending_seek.lock().unwrap();
+        let (player_position, paused, empty) = self.with_player(|player| {
+            (
+                player.get_pos().as_secs_f64(),
+                player.is_paused(),
+                player.empty(),
+            )
+        });
         PlaybackEvent {
             track_id,
-            position,
+            position: pending.unwrap_or(player_position),
             duration,
-            playing: !self.player.is_paused() && !self.player.empty(),
+            playing: !paused && !empty,
         }
     }
 
@@ -518,13 +634,14 @@ impl PlayerService {
         let mut ticks = self.ticks.lock().unwrap();
         *ticks += 1;
         let do_persist = (*ticks).is_multiple_of(20);
+        let check_output = (*ticks).is_multiple_of(4);
         drop(ticks);
         if do_persist {
             self.persist();
         }
         let promote = {
             let q = self.queue.lock().unwrap();
-            q.preloaded && self.player.len() == 1
+            q.preloaded && self.with_player(|player| player.len()) == 1
         };
         if promote {
             if let Some(change) = self.promote_preloaded() {
@@ -532,20 +649,14 @@ impl PlayerService {
                 let mut q = self.queue.lock().unwrap();
                 self.preload(&mut q);
             }
-            return;
-        }
-        if self.player.empty() {
-            let has = !self.queue.lock().unwrap().items.is_empty();
-            if !has {
-                return;
-            }
-            let (repeat_one, idx) = {
+        } else if self.with_player(Player::empty) {
+            let (repeat_one, idx, has) = {
                 let q = self.queue.lock().unwrap();
-                (q.repeat == RepeatMode::One, q.index)
+                (q.repeat == RepeatMode::One, q.index, !q.items.is_empty())
             };
-            if repeat_one {
+            if repeat_one && has {
                 let _ = self.load_at(idx, &Some(app));
-            } else {
+            } else if has {
                 let n = {
                     let q = self.queue.lock().unwrap();
                     Self::next_index(&q, q.index)
@@ -553,6 +664,11 @@ impl PlayerService {
                 if let Some(n) = n {
                     let _ = self.load_at(n, &Some(app));
                 }
+            }
+        }
+        if check_output {
+            if let Err(error) = self.refresh_output_device(false) {
+                eprintln!("无法切换默认音频输出设备: {error}");
             }
         }
     }
@@ -649,11 +765,32 @@ mod tests {
             .expect("load queue");
         assert!(ev.playing);
 
+        svc.set_volume(0.3);
+        std::thread::sleep(Duration::from_millis(200));
+        let before_switch = svc.snapshot().position;
+        assert!(!svc.refresh_output_device(false).unwrap());
+        assert!(svc.refresh_output_device(true).unwrap());
+        let after_switch = svc.snapshot();
+        assert!(after_switch.playing);
+        assert_eq!(after_switch.track_id, Some(1));
+        assert!(
+            (after_switch.position - before_switch).abs() < 0.4,
+            "device switch moved from {before_switch} to {}",
+            after_switch.position
+        );
+        assert!((svc.with_player(Player::volume) - 0.3).abs() < 1e-6);
+        assert!(svc.queue.lock().unwrap().preloaded);
+        assert_eq!(svc.with_player(Player::len), 2);
+
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while svc.player.len() != 1 && std::time::Instant::now() < deadline {
+        while svc.with_player(|player| player.len()) != 1 && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert_eq!(svc.player.len(), 1, "preloaded track should take over");
+        assert_eq!(
+            svc.with_player(|player| player.len()),
+            1,
+            "preloaded track should take over"
+        );
         let change = svc.promote_preloaded().expect("promote preloaded track");
         assert_eq!((change.index, change.id), (1, 2));
         assert!((*svc.duration.lock().unwrap() - 3.0).abs() < 0.01);

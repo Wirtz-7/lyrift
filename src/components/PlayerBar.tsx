@@ -13,7 +13,7 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import type { CSSProperties } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import { fmtTime } from "../lib/format";
 import { useStore } from "../lib/store";
 import CoverArt from "./CoverArt";
@@ -24,7 +24,10 @@ export default function PlayerBar() {
   const s = useStore();
   const { pb } = s;
   const t = pb.track;
-  const pct = pb.duration ? (pb.position / pb.duration) * 100 : 0;
+  const seeking = useRef(false);
+  const [seekPreview, setSeekPreview] = useState<number | null>(null);
+  const position = seekPreview ?? pb.position;
+  const pct = pb.duration ? (position / pb.duration) * 100 : 0;
   const fav = t ? s.favorites.has(t.id) : false;
 
   return (
@@ -95,15 +98,33 @@ export default function PlayerBar() {
           </button>
         </div>
         <div className="flex w-full items-center gap-2 text-[11px] tabular-nums text-white/45">
-          <span className="w-9 text-right">{fmtTime(pb.position)}</span>
+          <span className="w-9 text-right">{fmtTime(position)}</span>
           <input
             type="range"
             min={0}
             max={Math.max(1, pb.duration)}
             step={0.5}
-            value={pb.position}
+            value={position}
             style={fill(pct)}
-            onChange={(e) => s.seek(Number(e.target.value))}
+            onPointerDown={(e) => {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              seeking.current = true;
+              setSeekPreview(e.currentTarget.valueAsNumber);
+            }}
+            onChange={(e) => {
+              const value = e.currentTarget.valueAsNumber;
+              if (seeking.current) setSeekPreview(value);
+              else s.seek(value);
+            }}
+            onPointerUp={(e) => {
+              seeking.current = false;
+              s.seek(e.currentTarget.valueAsNumber);
+              setSeekPreview(null);
+            }}
+            onPointerCancel={() => {
+              seeking.current = false;
+              setSeekPreview(null);
+            }}
             aria-label="播放进度"
             className="h-4 flex-1"
           />

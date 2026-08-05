@@ -54,7 +54,7 @@ export default function Sidebar() {
           </button>
         ))}
       </div>
-      <div className="px-5 pb-4 text-[11px] text-white/30 max-[1100px]:hidden">v0.1.3</div>
+      <div className="px-5 pb-4 text-[11px] text-white/30 max-[1100px]:hidden">v0.1.4</div>
     </nav>
   );
 }

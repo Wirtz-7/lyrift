@@ -47,6 +47,22 @@ const scrollbar = await lyrics.evaluate((el) => ({
 assert.equal(scrollbar.width, "none");
 assert.equal(scrollbar.webkitDisplay, "none");
 
+const immersiveProgress = immersive.getByLabel("播放进度");
+const activeLyric = () =>
+  page.locator(".lyric-line").evaluateAll((lines) => lines.findIndex((line) => line.style.opacity === "1"));
+const activeBeforeDrag = await activeLyric();
+const progressBox = await immersiveProgress.boundingBox();
+assert(progressBox);
+await page.mouse.move(progressBox.x + 2, progressBox.y + progressBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(progressBox.x + progressBox.width * 0.75, progressBox.y + progressBox.height / 2, { steps: 8 });
+const previewPosition = Number(await immersiveProgress.inputValue());
+assert(previewPosition > 30, "progress thumb did not preview the drag");
+assert.equal(await activeLyric(), activeBeforeDrag, "dragging already seeked playback");
+await page.mouse.up();
+await page.waitForTimeout(30);
+assert.notEqual(await activeLyric(), activeBeforeDrag, "seek was not committed on release");
+
 const blurred = page.locator(".lyric-line").nth(3);
 const before = await lyrics.evaluate((el) => el.scrollTop);
 await lyrics.hover();
@@ -55,7 +71,9 @@ await page.waitForTimeout(30);
 assert((await lyrics.evaluate((el) => el.scrollTop)) > before, "lyrics no longer scroll");
 assert(await lyrics.evaluate((el) => el.classList.contains("lyrics-scrolling")));
 assert.equal(await blurred.evaluate((el) => getComputedStyle(el).filter), "none");
-await page.waitForTimeout(260);
+await page.waitForTimeout(1500);
+assert(await lyrics.evaluate((el) => el.classList.contains("lyrics-scrolling")));
+await page.waitForTimeout(550);
 assert(!(await lyrics.evaluate((el) => el.classList.contains("lyrics-scrolling"))));
 const blur = Number((await blurred.evaluate((el) => getComputedStyle(el).filter)).match(/[\d.]+/)?.[0] ?? 0);
 assert(blur <= 1.25, `inactive lyric blur is ${blur}px`);

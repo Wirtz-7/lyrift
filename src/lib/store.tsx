@@ -348,11 +348,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [flashError]);
   const seek = useCallback(
     (t: number) => {
-      if (isTauri) {
-        api.seek(t).catch((e) => flashError(String(e)));
-        return;
-      }
       setPb((p) => ({ ...p, position: Math.min(Math.max(0, t), p.duration) }));
+      if (isTauri) api.seek(t).catch((e) => flashError(String(e)));
     },
     [flashError],
   );
